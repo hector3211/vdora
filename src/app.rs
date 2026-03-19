@@ -389,6 +389,8 @@ pub fn build_ui(app: &adw::Application) {
         } else {
             config.borrow_mut().hotkey = default;
             let _ = config.borrow().save();
+            hotkey_label.set_label(&format_hotkey_line(&config.borrow()));
+            hotkey_entry.set_text(&config.borrow().hotkey);
         }
     }
 
@@ -420,7 +422,7 @@ pub fn build_ui(app: &adw::Application) {
             let hotkey_text = hotkey_entry.text().trim().to_string();
             let autopaste_enabled = settings_autopaste_switch.is_active();
 
-            let normalized_hotkey = match apply_hotkey_accel(&app, &hotkey_text) {
+            let normalized_hotkey = match parse_hotkey_accel(&hotkey_text) {
                 Ok(v) => v,
                 Err(err) => {
                     add_toast(&overlay, &format!("Invalid hotkey: {err}"));
@@ -428,21 +430,26 @@ pub fn build_ui(app: &adw::Application) {
                 }
             };
 
-            {
-                let mut cfg = config.borrow_mut();
-                cfg.model_path = model_path;
-                cfg.language = if language_text.is_empty() {
-                    None
-                } else {
-                    Some(language_text)
-                };
-                cfg.autopaste = autopaste_enabled;
-                cfg.hotkey = normalized_hotkey;
-            }
+            let mut next_cfg = config.borrow().clone();
+            next_cfg.model_path = model_path;
+            next_cfg.language = if language_text.is_empty() {
+                None
+            } else {
+                Some(language_text)
+            };
+            next_cfg.autopaste = autopaste_enabled;
+            next_cfg.hotkey = normalized_hotkey;
 
-            if let Err(err) = config.borrow().save() {
+            if let Err(err) = next_cfg.save() {
                 add_toast(&overlay, &format!("Failed to save settings: {err}"));
                 return;
+            }
+
+            app.set_accels_for_action("app.toggle-recording", &[&next_cfg.hotkey]);
+
+            {
+                let mut cfg = config.borrow_mut();
+                *cfg = next_cfg;
             }
 
             model_label.set_label(&format!("Model: {}", config.borrow().model_path.display()));
@@ -458,6 +465,12 @@ pub fn build_ui(app: &adw::Application) {
 }
 
 fn apply_hotkey_accel(app: &adw::Application, input: &str) -> Result<String> {
+    let accel = parse_hotkey_accel(input)?;
+    app.set_accels_for_action("app.toggle-recording", &[&accel]);
+    Ok(accel)
+}
+
+fn parse_hotkey_accel(input: &str) -> Result<String> {
     let accel = hotkey::to_gtk_accelerator(input).map_err(|msg| anyhow!(msg))?;
     let Some((key, mods)) = gtk::accelerator_parse(&accel) else {
         return Err(anyhow!("could not parse accelerator string"));
@@ -465,8 +478,6 @@ fn apply_hotkey_accel(app: &adw::Application, input: &str) -> Result<String> {
     if key == gdk::Key::VoidSymbol || mods.is_empty() {
         return Err(anyhow!("use at least one modifier and one key"));
     }
-
-    app.set_accels_for_action("app.toggle-recording", &[&accel]);
     Ok(accel)
 }
 
@@ -486,7 +497,7 @@ fn format_hotkey_line(config: &AppConfig) -> String {
         "Hotkey: {} ({})",
         config.hotkey,
         if hotkey::global_hotkeys_supported() {
-            "X11 global shortcuts available"
+            "X11 session: app-level shortcut"
         } else {
             "Wayland session: app-level shortcut"
         }
