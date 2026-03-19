@@ -1,0 +1,15 @@
+/target
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local env/secrets
+.env
+.env.*
+
+# Runtime artifacts
+*.log
