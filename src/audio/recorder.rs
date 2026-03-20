@@ -1,6 +1,8 @@
 use std::{
+    env, fs,
     path::PathBuf,
     process::{Child, Command, Stdio},
+    time::{Duration, SystemTime},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -58,8 +60,19 @@ pub struct RecordingSession {
     temp_path: Option<TempPath>,
 }
 
+pub struct RecordedAudio {
+    _temp_path: TempPath,
+    path: PathBuf,
+}
+
+impl RecordedAudio {
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 impl RecordingSession {
-    pub fn stop(mut self) -> Result<PathBuf> {
+    pub fn stop(mut self) -> Result<RecordedAudio> {
         let pid = Pid::from_raw(self.child.id() as i32);
         if let Err(err) = kill(pid, Signal::SIGINT) {
             tracing::warn!("failed to signal recorder process, continuing wait: {err}");
@@ -79,12 +92,15 @@ impl RecordingSession {
                     stderr.trim()
                 );
             }
-            if let Some(temp_path) = self.temp_path.take() {
-                temp_path
-                    .keep()
-                    .context("failed to preserve recording for transcription")?;
-            }
-            Ok(self.output_path)
+            let temp_path = self
+                .temp_path
+                .take()
+                .ok_or_else(|| anyhow!("recording temp path unexpectedly missing"))?;
+
+            Ok(RecordedAudio {
+                _temp_path: temp_path,
+                path: self.output_path,
+            })
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(anyhow!(
@@ -94,6 +110,73 @@ impl RecordingSession {
             ))
         }
     }
+}
+
+pub fn cleanup_stale_recordings(max_age: Duration) -> usize {
+    let now = SystemTime::now();
+    let mut removed = 0usize;
+
+    let entries = match fs::read_dir(env::temp_dir()) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!("failed to read temp directory for cleanup: {err}");
+            return 0;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_vdora_recording_path(&path) {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read metadata for potential stale recording {}: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let modified = match metadata.modified() {
+            Ok(modified) => modified,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read modified time for potential stale recording {}: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let age = match now.duration_since(modified) {
+            Ok(age) => age,
+            Err(_) => continue,
+        };
+
+        if age < max_age {
+            continue;
+        }
+
+        match fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(err) => {
+                tracing::warn!("failed to remove stale recording {}: {err}", path.display());
+            }
+        }
+    }
+
+    removed
+}
+
+fn is_vdora_recording_path(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    name.starts_with("vdora-") && name.ends_with(".wav")
 }
 
 fn recording_file_ready(path: &PathBuf) -> Result<bool> {
@@ -109,4 +192,22 @@ fn recording_file_ready(path: &PathBuf) -> Result<bool> {
 fn locate_recorder_binary() -> Result<PathBuf> {
     which::which("pw-record")
         .context("pw-record not found. Install PipeWire tools (pipewire-audio-client-libraries).")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_vdora_recording_path;
+
+    #[test]
+    fn matches_vdora_temp_recording_names() {
+        assert!(is_vdora_recording_path(std::path::Path::new("/tmp/vdora-abc.wav")));
+        assert!(is_vdora_recording_path(std::path::Path::new("vdora-123.wav")));
+    }
+
+    #[test]
+    fn ignores_non_vdora_temp_recordings() {
+        assert!(!is_vdora_recording_path(std::path::Path::new("/tmp/vdora-abc.mp3")));
+        assert!(!is_vdora_recording_path(std::path::Path::new("/tmp/other-abc.wav")));
+        assert!(!is_vdora_recording_path(std::path::Path::new("/tmp/vdora.wav")));
+    }
 }

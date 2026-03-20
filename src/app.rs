@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow};
 use gtk::{Orientation, gdk, gio, glib};
 
 use crate::{
-    audio::recorder::{Recorder, RecordingSession},
+    audio::recorder::{Recorder, RecordingSession, cleanup_stale_recordings},
     config::AppConfig,
     hotkey,
     insert::{clipboard, paste},
@@ -22,11 +22,18 @@ use crate::{
     tray::TrayEvent,
 };
 
+const STALE_RECORDING_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
 enum AppMessage {
     TranscriptionFinished(Result<String, String>),
 }
 
 pub fn build_ui(app: &adw::Application) {
+    let removed = cleanup_stale_recordings(STALE_RECORDING_MAX_AGE);
+    if removed > 0 {
+        tracing::info!("removed {removed} stale recording file(s) from temp directory");
+    }
+
     let config = Rc::new(RefCell::new(AppConfig::load_or_default()));
     let state = Rc::new(RefCell::new(AppState::Idle));
     let recorder = Rc::new(Recorder::new());
@@ -570,16 +577,8 @@ fn add_toast(overlay: &adw::ToastOverlay, text: &str) {
 }
 
 fn transcribe_session(session: RecordingSession, config: AppConfig) -> Result<String> {
-    let wav_path = session.stop().context("failed to finish audio recording")?;
-    let result = transcribe_file(wav_path.clone(), &config);
-    cleanup_recording_file(&wav_path);
-    result
-}
-
-fn cleanup_recording_file(path: &PathBuf) {
-    if let Err(err) = fs::remove_file(path) {
-        tracing::warn!("failed to clean up recording file {}: {err}", path.display());
-    }
+    let recording = session.stop().context("failed to finish audio recording")?;
+    transcribe_file(recording.path(), &config)
 }
 
 fn validate_model_path(path: &PathBuf) -> Result<()> {
@@ -591,7 +590,7 @@ fn validate_model_path(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn transcribe_file(wav_path: PathBuf, config: &AppConfig) -> Result<String> {
+fn transcribe_file(wav_path: &std::path::Path, config: &AppConfig) -> Result<String> {
     let whisper = WhisperService::new(config.model_path.clone(), config.language.clone());
-    whisper.transcribe_file(&wav_path)
+    whisper.transcribe_file(wav_path)
 }

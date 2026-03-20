@@ -12,6 +12,7 @@ Vdora is a native GTK4/libadwaita Linux app that records your voice, transcribes
 - No-speech recordings return to idle without raising an error
 - System tray integration (show/hide window, toggle recording, quit)
 - Tray tooltip reflects current app state (Idle/Recording/Transcribing/Error)
+- Temporary recordings are auto-cleaned and stale `vdora-*.wav` files are swept on startup
 
 ## Runtime dependencies
 
