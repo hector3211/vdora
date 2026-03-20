@@ -67,10 +67,6 @@ impl WhisperService {
         }
 
         let cleaned = normalize_transcript(&transcript);
-        if cleaned.is_empty() {
-            return Err(anyhow!("no speech detected in recording"));
-        }
-
         Ok(cleaned)
     }
 }

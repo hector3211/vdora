@@ -5,6 +5,7 @@ mod hotkey;
 mod insert;
 mod state;
 mod stt;
+mod tray;
 
 use anyhow::Result;
 use gtk::prelude::*;

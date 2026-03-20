@@ -19,6 +19,7 @@ use crate::{
     insert::{clipboard, paste},
     state::AppState,
     stt::whisper::WhisperService,
+    tray::TrayEvent,
 };
 
 enum AppMessage {
@@ -228,6 +229,14 @@ pub fn build_ui(app: &adw::Application) {
     stack.add_titled(&settings_page, Some("settings"), "Settings");
 
     let (sender, receiver) = mpsc::channel::<AppMessage>();
+    let (tray_sender, tray_receiver) = mpsc::channel::<TrayEvent>();
+    let tray_controller = match crate::tray::spawn(tray_sender) {
+        Ok(controller) => Some(controller),
+        Err(err) => {
+            tracing::warn!("failed to start tray service: {err}");
+            None
+        }
+    };
 
     {
         let status = status.clone();
@@ -236,17 +245,46 @@ pub fn build_ui(app: &adw::Application) {
         let transcript_buffer = transcript_buffer.clone();
         let autopaste_switch = autopaste_switch.clone();
         let record_button = record_button.clone();
+        let window = window.clone();
+        let app = app.clone();
+        let tray_controller = tray_controller.clone();
 
         glib::timeout_add_local(Duration::from_millis(50), move || {
+            while let Ok(event) = tray_receiver.try_recv() {
+                match event {
+                    TrayEvent::ShowWindow => {
+                        window.present();
+                    }
+                    TrayEvent::HideWindow => {
+                        window.hide();
+                    }
+                    TrayEvent::ToggleRecording => {
+                        app.activate_action("toggle-recording", None::<&glib::Variant>);
+                    }
+                    TrayEvent::Quit => {
+                        app.quit();
+                    }
+                }
+            }
+
             while let Ok(message) = receiver.try_recv() {
                 match message {
                     AppMessage::TranscriptionFinished(result) => {
                         *state.borrow_mut() = AppState::Idle;
                         status.set_label(AppState::Idle.label());
                         record_button.set_label("Start Recording");
+                        if let Some(controller) = &tray_controller {
+                            controller.set_status(AppState::Idle.label());
+                        }
 
                         match result {
                             Ok(transcript) => {
+                                if transcript.trim().is_empty() {
+                                    transcript_buffer.set_text("");
+                                    add_toast(&overlay, "No speech detected. Ready when you are.");
+                                    continue;
+                                }
+
                                 transcript_buffer.set_text(&transcript);
 
                                 if let Err(err) = clipboard::set_text(&transcript) {
@@ -269,6 +307,9 @@ pub fn build_ui(app: &adw::Application) {
                                 transcript_buffer.set_text("");
                                 *state.borrow_mut() = AppState::Error;
                                 status.set_label(AppState::Error.label());
+                                if let Some(controller) = &tray_controller {
+                                    controller.set_status(AppState::Error.label());
+                                }
                                 add_toast(&overlay, &err);
                             }
                         }
@@ -314,6 +355,7 @@ pub fn build_ui(app: &adw::Application) {
         let active_session = active_session.clone();
         let state = state.clone();
         let record_button = record_button.clone();
+        let tray_controller = tray_controller.clone();
 
         Rc::new(move || {
             let currently_recording = active_session.borrow().is_some();
@@ -324,12 +366,18 @@ pub fn build_ui(app: &adw::Application) {
                         *active_session.borrow_mut() = Some(session);
                         *state.borrow_mut() = AppState::Recording;
                         status.set_label(AppState::Recording.label());
+                        if let Some(controller) = &tray_controller {
+                            controller.set_status(AppState::Recording.label());
+                        }
                         record_button.set_label("Stop Recording");
                         add_toast(&overlay, "Listening...");
                     }
                     Err(err) => {
                         *state.borrow_mut() = AppState::Error;
                         status.set_label(AppState::Error.label());
+                        if let Some(controller) = &tray_controller {
+                            controller.set_status(AppState::Error.label());
+                        }
                         add_toast(&overlay, &format!("Unable to record: {err}"));
                     }
                 }
@@ -344,6 +392,9 @@ pub fn build_ui(app: &adw::Application) {
             record_button.set_label("Start Recording");
             *state.borrow_mut() = AppState::Transcribing;
             status.set_label(AppState::Transcribing.label());
+            if let Some(controller) = &tray_controller {
+                controller.set_status(AppState::Transcribing.label());
+            }
 
             let sender = sender.clone();
             let config_snapshot = config.borrow().clone();
@@ -460,6 +511,11 @@ pub fn build_ui(app: &adw::Application) {
             add_toast(&overlay, "Settings saved");
         });
     }
+
+    window.connect_close_request(|window| {
+        window.hide();
+        glib::Propagation::Stop
+    });
 
     window.present();
 }

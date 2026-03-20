@@ -9,6 +9,9 @@ Vdora is a native GTK4/libadwaita Linux app that records your voice, transcribes
 - Clipboard copy for every transcript
 - Auto-paste via `ydotool` (with fallback if unavailable)
 - Basic settings persistence (`autopaste`, `language`, `model_path`)
+- No-speech recordings return to idle without raising an error
+- System tray integration (show/hide window, toggle recording, quit)
+- Tray tooltip reflects current app state (Idle/Recording/Transcribing/Error)
 
 ## Runtime dependencies
 
@@ -56,3 +59,5 @@ cargo run
 - Clipboard insertion works reliably.
 - Simulated paste may depend on compositor/session permissions.
 - If auto-paste fails, transcript is still copied to clipboard.
+- Tray icon visibility on GNOME may require an AppIndicator/KStatusNotifier extension.
+- If a `vdora` icon is not installed in the icon theme, tray falls back to a microphone icon.

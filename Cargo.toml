@@ -18,3 +18,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 which = "6.0"
 whisper-rs = "0.12"
+ksni = "0.2"
