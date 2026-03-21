@@ -2,6 +2,18 @@
 name = "vdora"
 version = "0.1.0"
 edition = "2024"
+description = "GNOME voice-to-paste app with local Whisper transcription"
+license = "MIT"
+authors = ["Vdora Maintainers"]
+
+[package.metadata.deb]
+maintainer = "Vdora Maintainers"
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+  ["target/release/vdora", "usr/bin/", "755"],
+]
 
 [dependencies]
 anyhow = "1.0"

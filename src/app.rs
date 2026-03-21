@@ -1,19 +1,11 @@
-use std::{
-    cell::RefCell,
-    fs,
-    path::PathBuf,
-    rc::Rc,
-    sync::mpsc,
-    thread,
-    time::Duration,
-};
+use std::{cell::RefCell, fs, path::PathBuf, rc::Rc, sync::mpsc, thread, time::Duration};
 
 use adw::prelude::*;
-use anyhow::{Context, Result, anyhow};
-use gtk::{Orientation, gdk, gio, glib};
+use anyhow::{anyhow, Context, Result};
+use gtk::{gdk, gio, glib, Orientation};
 
 use crate::{
-    audio::recorder::{Recorder, RecordingSession, cleanup_stale_recordings},
+    audio::recorder::{cleanup_stale_recordings, Recorder, RecordingSession},
     config::AppConfig,
     hotkey,
     insert::{clipboard, paste},
@@ -35,6 +27,14 @@ pub fn build_ui(app: &adw::Application) {
     }
 
     let config = Rc::new(RefCell::new(AppConfig::load_or_default()));
+    let autopaste_available = paste::is_available();
+    if config.borrow().autopaste && !autopaste_available {
+        tracing::info!("ydotool not found, disabling persisted auto-paste setting");
+        config.borrow_mut().autopaste = false;
+        if let Err(err) = config.borrow().save() {
+            tracing::warn!("failed to persist disabled auto-paste setting: {err}");
+        }
+    }
     let state = Rc::new(RefCell::new(AppState::Idle));
     let recorder = Rc::new(Recorder::new());
     let active_session: Rc<RefCell<Option<RecordingSession>>> = Rc::new(RefCell::new(None));
@@ -113,12 +113,13 @@ pub fn build_ui(app: &adw::Application) {
         .valign(gtk::Align::Center)
         .build();
     let autopaste_label = gtk::Label::builder()
-        .label("Auto-paste after transcription")
+        .label("Auto-paste after transcription (optional: ydotool)")
         .xalign(0.0)
         .hexpand(true)
         .build();
     options_row.append(&autopaste_label);
     options_row.append(&autopaste_switch);
+    autopaste_switch.set_sensitive(autopaste_available);
     recorder_page.append(&options_row);
 
     let model_label = gtk::Label::builder()
@@ -188,7 +189,7 @@ pub fn build_ui(app: &adw::Application) {
         .spacing(8)
         .build();
     let settings_autopaste_label = gtk::Label::builder()
-        .label("Auto-paste")
+        .label("Auto-paste (optional: ydotool)")
         .xalign(0.0)
         .hexpand(true)
         .build();
@@ -196,6 +197,7 @@ pub fn build_ui(app: &adw::Application) {
         .active(config.borrow().autopaste)
         .valign(gtk::Align::Center)
         .build();
+    settings_autopaste_switch.set_sensitive(autopaste_available);
     settings_autopaste_row.append(&settings_autopaste_label);
     settings_autopaste_row.append(&settings_autopaste_switch);
     settings_page.append(&settings_autopaste_row);
@@ -263,7 +265,7 @@ pub fn build_ui(app: &adw::Application) {
                         window.present();
                     }
                     TrayEvent::HideWindow => {
-                        window.hide();
+                        window.set_visible(false);
                     }
                     TrayEvent::ToggleRecording => {
                         app.activate_action("toggle-recording", None::<&glib::Variant>);
@@ -301,9 +303,7 @@ pub fn build_ui(app: &adw::Application) {
                                         Ok(()) => add_toast(&overlay, "Transcribed and pasted"),
                                         Err(err) => add_toast(
                                             &overlay,
-                                            &format!(
-                                                "Copied only. Auto-paste unavailable: {err}"
-                                            ),
+                                            &format!("Copied only. Auto-paste unavailable: {err}"),
                                         ),
                                     }
                                 } else {
@@ -325,6 +325,13 @@ pub fn build_ui(app: &adw::Application) {
             }
             glib::ControlFlow::Continue
         });
+    }
+
+    if !autopaste_available {
+        add_toast(
+            &overlay,
+            "Auto-paste unavailable: install ydotool/ydotoold to enable it. Clipboard copy still works.",
+        );
     }
 
     {
@@ -437,7 +444,10 @@ pub fn build_ui(app: &adw::Application) {
 
     let initial_hotkey = config.borrow().hotkey.clone();
     if let Err(err) = apply_hotkey_accel(app, &initial_hotkey) {
-        add_toast(&overlay, &format!("Invalid hotkey in config: {err}. Reset to default."));
+        add_toast(
+            &overlay,
+            &format!("Invalid hotkey in config: {err}. Reset to default."),
+        );
         let default = hotkey::default_hotkey().to_string();
         if let Err(reset_err) = apply_hotkey_accel(app, &default) {
             add_toast(
@@ -463,6 +473,7 @@ pub fn build_ui(app: &adw::Application) {
         let model_entry = model_entry.clone();
         let language_entry = language_entry.clone();
         let hotkey_entry = hotkey_entry.clone();
+        let autopaste_available = autopaste_available;
 
         save_button.connect_clicked(move |_| {
             let model_text = model_entry.text().trim().to_string();
@@ -479,6 +490,15 @@ pub fn build_ui(app: &adw::Application) {
             let language_text = language_entry.text().trim().to_string();
             let hotkey_text = hotkey_entry.text().trim().to_string();
             let autopaste_enabled = settings_autopaste_switch.is_active();
+            if autopaste_enabled && !autopaste_available {
+                add_toast(
+                    &overlay,
+                    "Auto-paste requires ydotool/ydotoold. Install it or keep auto-paste disabled.",
+                );
+                settings_autopaste_switch.set_active(false);
+                autopaste_switch.set_active(false);
+                return;
+            }
 
             let normalized_hotkey = match parse_hotkey_accel(&hotkey_text) {
                 Ok(v) => v,
@@ -520,7 +540,7 @@ pub fn build_ui(app: &adw::Application) {
     }
 
     window.connect_close_request(|window| {
-        window.hide();
+        window.set_visible(false);
         glib::Propagation::Stop
     });
 
@@ -568,7 +588,7 @@ fn format_hotkey_line(config: &AppConfig) -> String {
 }
 
 fn settings_hint_text() -> &'static str {
-    "Hotkey accepts forms like Ctrl+Alt+Space or <Ctrl><Alt>space. On Wayland this works while the app is focused; use GNOME custom shortcuts for global behavior."
+    "Hotkey accepts forms like Ctrl+Alt+Space or <Ctrl><Alt>space. Auto-paste is optional and requires ydotool/ydotoold. On Wayland this hotkey works while the app is focused; use GNOME custom shortcuts for global behavior."
 }
 
 fn add_toast(overlay: &adw::ToastOverlay, text: &str) {

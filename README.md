@@ -14,13 +14,25 @@ Vdora is a native GTK4/libadwaita Linux app that records your voice, transcribes
 - Tray tooltip reflects current app state (Idle/Recording/Transcribing/Error)
 - Temporary recordings are auto-cleaned and stale `vdora-*.wav` files are swept on startup
 
+## Install (recommended)
+
+Use the prebuilt package from GitHub Releases when available.
+
+- `.deb` package for Debian/Ubuntu-style systems
+- prebuilt Linux binary archive (`.tar.gz`) for manual install
+
+Building from source is still supported (see below), but end users should prefer release artifacts.
+
 ## Runtime dependencies
 
-Install these on your GNOME Linux machine:
+Required:
 
 - `pw-record` (PipeWire tools)
-- `ydotool` and `ydotoold` (for key injection)
 - GTK4 + libadwaita runtime libraries
+
+Optional:
+
+- `ydotool` and `ydotoold` (only for auto-paste key injection)
 
 ## Build dependencies
 
@@ -34,7 +46,13 @@ The `whisper-rs` stack compiles native bindings and requires:
 Example on Fedora-like systems:
 
 ```bash
-sudo dnf install clang clang-devel cmake gcc-c++ gtk4-devel libadwaita-devel pipewire-utils ydotool
+sudo dnf install clang clang-devel cmake gcc-c++ glib2-devel gtk4-devel libadwaita-devel dbus-devel pipewire-utils
+```
+
+Optional auto-paste support:
+
+```bash
+sudo dnf install ydotool
 ```
 
 ## Whisper model setup
