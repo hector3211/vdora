@@ -17,6 +17,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install system build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libgtk-4-dev libadwaita-1-dev libdbus-1-dev clang cmake libclang-dev pkg-config
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
