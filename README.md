@@ -33,6 +33,7 @@ Required:
 Optional:
 
 - `ydotool` and `ydotoold` (only for auto-paste key injection)
+- `wl-copy` from `wl-clipboard` (recommended on Wayland for reliable clipboard writes from tray/background)
 
 ## Build dependencies
 
@@ -76,6 +77,7 @@ cargo run
 ## Notes on GNOME Wayland
 
 - Clipboard insertion works reliably.
+- On Wayland, Vdora prefers `wl-copy` when available (then falls back to GTK clipboard APIs).
 - Simulated paste may depend on compositor/session permissions.
 - If auto-paste fails, transcript is still copied to clipboard.
 - Tray icon visibility on GNOME may require an AppIndicator/KStatusNotifier extension.

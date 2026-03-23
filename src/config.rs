@@ -15,6 +15,36 @@ pub struct AppConfig {
     pub language: Option<String>,
     pub model_path: PathBuf,
     pub hotkey: String,
+    pub log_level: LogLevel,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Info,
+    Debug,
+}
+
+impl LogLevel {
+    pub fn as_filter_directive(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Debug => "debug",
+        }
+    }
+
+    pub fn as_ui_label(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Debug => "debug",
+        }
+    }
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self::Info
+    }
 }
 
 impl Default for AppConfig {
@@ -25,6 +55,7 @@ impl Default for AppConfig {
             language: None,
             model_path,
             hotkey: crate::hotkey::default_hotkey().to_string(),
+            log_level: LogLevel::default(),
         }
     }
 }
@@ -85,13 +116,14 @@ fn config_file_path() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, LogLevel};
 
     #[test]
     fn default_config_has_hotkey() {
         let cfg = AppConfig::default();
         assert!(!cfg.hotkey.trim().is_empty());
         assert!(!cfg.autopaste);
+        assert_eq!(cfg.log_level, LogLevel::Info);
     }
 
     #[test]
@@ -102,5 +134,17 @@ model_path = "/tmp/model.bin"
 "#;
         let parsed: AppConfig = toml::from_str(raw).expect("config should parse");
         assert!(!parsed.hotkey.trim().is_empty());
+        assert_eq!(parsed.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn parses_debug_log_level() {
+        let raw = r#"
+autopaste = false
+model_path = "/tmp/model.bin"
+log_level = "debug"
+"#;
+        let parsed: AppConfig = toml::from_str(raw).expect("config should parse");
+        assert_eq!(parsed.log_level, LogLevel::Debug);
     }
 }

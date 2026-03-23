@@ -1,6 +1,7 @@
 mod app;
 mod audio;
 mod config;
+mod diagnostics;
 mod hotkey;
 mod insert;
 mod state;
@@ -25,8 +26,15 @@ fn main() -> Result<()> {
 }
 
 fn init_tracing() {
+    let config = crate::config::AppConfig::load_or_default();
+    let fallback_level = config.log_level.as_filter_directive();
+    let env_filter = match std::env::var("RUST_LOG") {
+        Ok(filter) => EnvFilter::new(filter),
+        Err(_) => EnvFilter::new(fallback_level),
+    };
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(EnvFilter::from_default_env())
+        .with(env_filter)
         .init();
 }

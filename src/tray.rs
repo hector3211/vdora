@@ -5,11 +5,14 @@ use anyhow::Result;
 use ksni::menu::StandardItem;
 use ksni::ToolTip;
 
+const MENU_SHOW_WINDOW: &str = "Show Window";
+const MENU_HIDE_WINDOW: &str = "Hide Window";
+const MENU_QUIT: &str = "Quit";
+
 #[derive(Debug, Clone, Copy)]
 pub enum TrayEvent {
     ShowWindow,
     HideWindow,
-    ToggleRecording,
     Quit,
 }
 
@@ -22,15 +25,18 @@ impl TrayController {
     pub fn set_status(&self, status: &str) {
         self.handle.update(|tray| {
             tray.status = status.to_string();
+            tray.icon_name = icon_name_for_status(&tray.base_icon_name, status);
         });
     }
 }
 
 pub fn spawn(sender: Sender<TrayEvent>) -> Result<TrayController> {
+    let base_icon_name = resolve_icon_name();
     let tray = VdoraTray {
         sender,
         status: "Idle".to_string(),
-        icon_name: resolve_icon_name(),
+        icon_name: base_icon_name.clone(),
+        base_icon_name,
     };
     let service = ksni::TrayService::new(tray);
     let handle = service.handle();
@@ -42,6 +48,7 @@ struct VdoraTray {
     sender: Sender<TrayEvent>,
     status: String,
     icon_name: String,
+    base_icon_name: String,
 }
 
 impl ksni::Tray for VdoraTray {
@@ -73,7 +80,7 @@ impl ksni::Tray for VdoraTray {
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         vec![
             StandardItem {
-                label: "Show Window".into(),
+                label: MENU_SHOW_WINDOW.into(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.sender.send(TrayEvent::ShowWindow);
                 }),
@@ -81,7 +88,7 @@ impl ksni::Tray for VdoraTray {
             }
             .into(),
             StandardItem {
-                label: "Hide Window".into(),
+                label: MENU_HIDE_WINDOW.into(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.sender.send(TrayEvent::HideWindow);
                 }),
@@ -89,15 +96,7 @@ impl ksni::Tray for VdoraTray {
             }
             .into(),
             StandardItem {
-                label: "Start/Stop Recording".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayEvent::ToggleRecording);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Quit".into(),
+                label: MENU_QUIT.into(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.sender.send(TrayEvent::Quit);
                 }),
@@ -142,4 +141,39 @@ fn app_icon_exists() -> bool {
     }
 
     false
+}
+
+fn icon_name_for_status(base_icon_name: &str, status: &str) -> String {
+    if status.starts_with("Recording") {
+        "media-record-symbolic".to_string()
+    } else {
+        base_icon_name.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{icon_name_for_status, MENU_HIDE_WINDOW, MENU_QUIT, MENU_SHOW_WINDOW};
+
+    #[test]
+    fn tray_menu_labels_do_not_expose_record_toggle() {
+        let labels = [MENU_SHOW_WINDOW, MENU_HIDE_WINDOW, MENU_QUIT];
+        assert!(labels.contains(&"Show Window"));
+        assert!(labels.contains(&"Hide Window"));
+        assert!(labels.contains(&"Quit"));
+        assert!(!labels.iter().any(|label| label.contains("Recording")));
+    }
+
+    #[test]
+    fn tray_icon_switches_to_record_icon_when_recording() {
+        assert_eq!(
+            icon_name_for_status("vdora", "Recording..."),
+            "media-record-symbolic"
+        );
+        assert_eq!(icon_name_for_status("vdora", "Idle"), "vdora");
+        assert_eq!(
+            icon_name_for_status("audio-input-microphone-symbolic", "Transcribing..."),
+            "audio-input-microphone-symbolic"
+        );
+    }
 }
