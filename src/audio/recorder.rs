@@ -72,34 +72,23 @@ impl RecordedAudio {
 }
 
 impl RecordingSession {
-    pub fn stop(mut self) -> Result<RecordedAudio> {
-        let pid = Pid::from_raw(self.child.id() as i32);
-        if let Err(err) = kill(pid, Signal::SIGINT) {
-            tracing::warn!("failed to signal recorder process, continuing wait: {err}");
-        }
-
-        let output = self
-            .child
-            .wait_with_output()
-            .context("failed to wait for recorder process")?;
-
-        if recording_file_ready(&self.output_path)? {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(
-                    "pw-record exited with status {} but audio file is valid: {}",
-                    output.status,
-                    stderr.trim()
-                );
-            }
-            let temp_path = self
-                .temp_path
+    pub fn stop(self) -> Result<RecordedAudio> {
+        let RecordingSession {
+            child,
+            output_path,
+            mut temp_path,
+        } = self;
+        signal_stop(&child);
+        let output = wait_for_exit(child)?;
+        if recording_file_ready(&output_path)? {
+            log_non_success_if_valid(&output);
+            let temp_path = temp_path
                 .take()
                 .ok_or_else(|| anyhow!("recording temp path unexpectedly missing"))?;
 
             Ok(RecordedAudio {
                 _temp_path: temp_path,
-                path: self.output_path,
+                path: output_path,
             })
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -109,6 +98,30 @@ impl RecordingSession {
                 stderr.trim()
             ))
         }
+    }
+}
+
+fn signal_stop(child: &Child) {
+    let pid = Pid::from_raw(child.id() as i32);
+    if let Err(err) = kill(pid, Signal::SIGINT) {
+        tracing::warn!("failed to signal recorder process, continuing wait: {err}");
+    }
+}
+
+fn wait_for_exit(child: Child) -> Result<std::process::Output> {
+    child
+        .wait_with_output()
+        .context("failed to wait for recorder process")
+}
+
+fn log_non_success_if_valid(output: &std::process::Output) {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            "pw-record exited with status {} but audio file is valid: {}",
+            output.status,
+            stderr.trim()
+        );
     }
 }
 

@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    fs,
     path::PathBuf,
     rc::Rc,
     sync::mpsc,
@@ -19,7 +18,7 @@ use crate::{
     hotkey,
     insert::{clipboard, paste},
     state::AppState,
-    stt::whisper::WhisperService,
+    stt::whisper::{WhisperService, validate_model_path},
     tray::TrayEvent,
 };
 
@@ -80,322 +79,58 @@ pub fn build_ui(app: &adw::Application) {
     root.append(&stack);
     overlay.set_child(Some(&root));
 
-    let recorder_page = gtk::Box::builder()
-        .orientation(Orientation::Vertical)
-        .spacing(16)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-
-    let title = gtk::Label::builder()
-        .label("Voice to Cursor")
-        .css_classes(["title-1"])
-        .xalign(0.0)
-        .build();
-    recorder_page.append(&title);
-
-    let subtitle = gtk::Label::builder()
-        .label("Record, transcribe locally, then paste where your cursor is.")
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    recorder_page.append(&subtitle);
-
-    let status_row = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    let status_spinner = gtk::Spinner::new();
-    status_spinner.set_spinning(false);
-    let status = gtk::Label::builder()
-        .label(AppState::Idle.label())
-        .xalign(0.0)
-        .build();
-    status_row.append(&status_spinner);
-    status_row.append(&status);
-    recorder_page.append(&status_row);
-
-    let elapsed_label = gtk::Label::builder()
-        .label("")
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .build();
-    recorder_page.append(&elapsed_label);
-
-    let record_button = gtk::Button::builder()
-        .label("Start Recording")
-        .hexpand(true)
-        .build();
-    record_button.add_css_class("suggested-action");
-    recorder_page.append(&record_button);
-
-    let recorder_hint = gtk::Label::builder()
-        .label(format_hotkey_tip(&config.borrow()))
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    recorder_page.append(&recorder_hint);
-
-    let model_status_label = gtk::Label::builder()
-        .label(format_model_status(config.borrow().model_path.is_file()))
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    recorder_page.append(&model_status_label);
-
-    let autopaste_status_label = gtk::Label::builder()
-        .label(format_autopaste_status(autopaste_available))
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    recorder_page.append(&autopaste_status_label);
-
-    let model_label = gtk::Label::builder()
-        .label(format!("Model: {}", config.borrow().model_path.display()))
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    recorder_page.append(&model_label);
-
-    let hotkey_label = gtk::Label::builder()
-        .label(format_hotkey_line(&config.borrow()))
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    recorder_page.append(&hotkey_label);
-
-    let transcript_title = gtk::Label::builder()
-        .label("Last transcript")
-        .xalign(0.0)
-        .build();
-    recorder_page.append(&transcript_title);
-
-    let transcript_hint = gtk::Label::builder()
-        .label("Your latest transcript appears here.")
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .build();
-    recorder_page.append(&transcript_hint);
-
-    let transcript_view = gtk::TextView::builder()
-        .editable(false)
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .vexpand(true)
-        .build();
-    let transcript_buffer = gtk::TextBuffer::new(None);
-    transcript_view.set_buffer(Some(&transcript_buffer));
-    let transcript_scroll = gtk::ScrolledWindow::builder()
-        .vexpand(true)
-        .hexpand(true)
-        .min_content_height(180)
-        .child(&transcript_view)
-        .build();
-    recorder_page.append(&transcript_scroll);
-
-    let transcript_actions_row = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    let copy_button = gtk::Button::with_label("Copy");
-    let paste_button = gtk::Button::with_label("Paste");
-    let clear_button = gtk::Button::with_label("Clear");
-    transcript_actions_row.append(&copy_button);
-    transcript_actions_row.append(&paste_button);
-    transcript_actions_row.append(&clear_button);
-    recorder_page.append(&transcript_actions_row);
-
-    let error_revealer = gtk::Revealer::new();
-    error_revealer.set_reveal_child(false);
-    error_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-    let error_box = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    error_box.add_css_class("card");
-    let error_label = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
-    error_label.add_css_class("error");
-    let open_settings_button = gtk::Button::with_label("Open Settings");
-    let dismiss_error_button = gtk::Button::with_label("Dismiss");
-    error_box.append(&error_label);
-    error_box.append(&open_settings_button);
-    error_box.append(&dismiss_error_button);
-    error_revealer.set_child(Some(&error_box));
-    recorder_page.append(&error_revealer);
-
+    let (recorder_page, recorder_widgets) =
+        build_recorder_page(&config.borrow(), autopaste_available);
     stack.add_titled(&recorder_page, Some("recorder"), "Recorder");
 
-    let settings_page = adw::PreferencesPage::new();
-
-    let settings_general_group = adw::PreferencesGroup::builder()
-        .title("General")
-        .description("Tune transcription and insertion behavior.")
-        .build();
-
-    let settings_autopaste_row = adw::ActionRow::builder()
-        .title("Auto-paste")
-        .subtitle("Automatically press Ctrl+V after transcription (optional: ydotool).")
-        .build();
-    let settings_autopaste_switch = gtk::Switch::builder()
-        .active(config.borrow().autopaste)
-        .valign(gtk::Align::Center)
-        .build();
-    settings_autopaste_switch.set_sensitive(autopaste_available);
-    settings_autopaste_row.add_suffix(&settings_autopaste_switch);
-    settings_general_group.add(&settings_autopaste_row);
-
-    let model_entry = gtk::Entry::builder()
-        .hexpand(true)
-        .text(config.borrow().model_path.display().to_string())
-        .placeholder_text("/home/user/.local/share/vdora/models/ggml-base.en.bin")
-        .build();
-    model_entry.set_width_chars(36);
-    let model_row = adw::ActionRow::builder()
-        .title("Model path")
-        .subtitle("Local Whisper model file path")
-        .build();
-    model_row.add_suffix(&model_entry);
-    settings_general_group.add(&model_row);
-
-    let language_entry = gtk::Entry::builder()
-        .hexpand(true)
-        .text(config.borrow().language.clone().unwrap_or_default())
-        .placeholder_text("auto (blank), en, es, ...")
-        .build();
-    language_entry.set_width_chars(16);
-    let language_row = adw::ActionRow::builder()
-        .title("Language")
-        .subtitle("Leave blank for auto-detect")
-        .build();
-    language_row.add_suffix(&language_entry);
-    settings_general_group.add(&language_row);
-
-    let hotkey_entry = gtk::Entry::builder()
-        .hexpand(true)
-        .text(config.borrow().hotkey.clone())
-        .placeholder_text("Ctrl+Alt+Space or <Ctrl><Alt>space")
-        .build();
-    hotkey_entry.set_width_chars(20);
-    let hotkey_row = adw::ActionRow::builder()
-        .title("Record toggle hotkey")
-        .subtitle("App-level shortcut; global behavior depends on session")
-        .build();
-    hotkey_row.add_suffix(&hotkey_entry);
-    settings_general_group.add(&hotkey_row);
-
-    let log_level_options = gtk::StringList::new(&["info", "debug"]);
-    let log_level_dropdown = gtk::DropDown::builder().model(&log_level_options).build();
-    log_level_dropdown.set_selected(log_level_to_index(config.borrow().log_level));
-    let log_level_row = adw::ActionRow::builder()
-        .title("Log level")
-        .subtitle("Applied on next launch (info or debug)")
-        .build();
-    log_level_row.add_suffix(&log_level_dropdown);
-    settings_general_group.add(&log_level_row);
-
-    settings_page.add(&settings_general_group);
-
-    let settings_actions_group = adw::PreferencesGroup::builder()
-        .title("Apply")
-        .build();
-
-    let save_button = gtk::Button::with_label("Save Settings");
-    save_button.add_css_class("suggested-action");
-    settings_actions_group.add(&save_button);
-
-    let test_checks_button = gtk::Button::with_label("Test Checks Now");
-    settings_actions_group.add(&test_checks_button);
-
-    let settings_hint = gtk::Label::builder()
-        .label(settings_hint_text())
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    settings_actions_group.add(&settings_hint);
-    settings_page.add(&settings_actions_group);
-
+    let (settings_page, settings_widgets) =
+        build_settings_page(&config.borrow(), autopaste_available);
     stack.add_titled(&settings_page, Some("settings"), "Settings");
 
-    let diagnostics_page = gtk::Box::builder()
-        .orientation(Orientation::Vertical)
-        .spacing(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-
-    let diagnostics_title = gtk::Label::builder()
-        .label("Diagnostics")
-        .css_classes(["title-2"])
-        .xalign(0.0)
-        .build();
-    diagnostics_page.append(&diagnostics_title);
-
-    let diagnostics_subtitle = gtk::Label::builder()
-        .label("Dependency health, session details, and recent user-visible errors.")
-        .css_classes(["dim-label"])
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    diagnostics_page.append(&diagnostics_subtitle);
-
-    let health_pw_record_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
-    let health_wl_copy_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
-    let health_ydotool_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
-    let health_model_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
-    let health_session_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
-
-    diagnostics_page.append(&health_session_label);
-    diagnostics_page.append(&health_pw_record_label);
-    diagnostics_page.append(&health_wl_copy_label);
-    diagnostics_page.append(&health_ydotool_label);
-    diagnostics_page.append(&health_model_label);
-
-    let last_error_title = gtk::Label::builder()
-        .label("Last errors")
-        .xalign(0.0)
-        .build();
-    diagnostics_page.append(&last_error_title);
-
-    let last_error_view = gtk::TextView::builder()
-        .editable(false)
-        .cursor_visible(false)
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .vexpand(true)
-        .build();
-    let last_error_buffer = gtk::TextBuffer::new(None);
-    last_error_buffer.set_text("No recent errors");
-    last_error_view.set_buffer(Some(&last_error_buffer));
-    let last_error_scroll = gtk::ScrolledWindow::builder()
-        .vexpand(true)
-        .hexpand(true)
-        .min_content_height(150)
-        .child(&last_error_view)
-        .build();
-    diagnostics_page.append(&last_error_scroll);
-
-    let diagnostics_actions_row = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    let copy_diagnostics_button = gtk::Button::with_label("Copy Diagnostics");
-    let export_diagnostics_button = gtk::Button::with_label("Export Log");
-    let refresh_diagnostics_button = gtk::Button::with_label("Refresh Checks");
-    diagnostics_actions_row.append(&copy_diagnostics_button);
-    diagnostics_actions_row.append(&export_diagnostics_button);
-    diagnostics_actions_row.append(&refresh_diagnostics_button);
-    diagnostics_page.append(&diagnostics_actions_row);
-
+    let (diagnostics_page, diagnostics_widgets) = build_diagnostics_page();
     stack.add_titled(&diagnostics_page, Some("diagnostics"), "Diagnostics");
+
+    let RecorderWidgets {
+        status_spinner,
+        status,
+        elapsed_label,
+        record_button,
+        recorder_hint,
+        model_status_label,
+        model_label,
+        hotkey_label,
+        transcript_buffer,
+        copy_button,
+        paste_button,
+        clear_button,
+        error_revealer,
+        error_label,
+        open_settings_button,
+        dismiss_error_button,
+        ..
+    } = recorder_widgets;
+
+    let SettingsWidgets {
+        settings_autopaste_switch,
+        model_entry,
+        language_entry,
+        hotkey_entry,
+        log_level_dropdown,
+        save_button,
+        test_checks_button,
+    } = settings_widgets;
+
+    let DiagnosticsWidgets {
+        health_pw_record_label,
+        health_wl_copy_label,
+        health_ydotool_label,
+        health_model_label,
+        health_session_label,
+        last_error_buffer,
+        copy_diagnostics_button,
+        export_diagnostics_button,
+        refresh_diagnostics_button,
+    } = diagnostics_widgets;
 
     let diagnostics_health = Rc::new(RefCell::new(diagnostics::collect_health(
         validate_model_path(&config.borrow().model_path).is_ok(),
@@ -418,22 +153,14 @@ pub fn build_ui(app: &adw::Application) {
             let mut health_state = diagnostics_health.borrow_mut();
             *health_state = health.clone();
 
-            let lines = diagnostics::health_lines(&health);
-            if let Some(line) = lines.first() {
-                health_session_label.set_label(line);
-            }
-            if let Some(line) = lines.get(1) {
-                health_pw_record_label.set_label(line);
-            }
-            if let Some(line) = lines.get(2) {
-                health_wl_copy_label.set_label(line);
-            }
-            if let Some(line) = lines.get(3) {
-                health_ydotool_label.set_label(line);
-            }
-            if let Some(line) = lines.get(4) {
-                health_model_label.set_label(line);
-            }
+            set_health_labels(
+                &health,
+                &health_session_label,
+                &health_pw_record_label,
+                &health_wl_copy_label,
+                &health_ydotool_label,
+                &health_model_label,
+            );
 
             let errors = reporter.snapshot();
             if errors.is_empty() {
@@ -461,18 +188,21 @@ pub fn build_ui(app: &adw::Application) {
         }
     };
     let tray_available = tray_controller.is_some();
+    let ui_state_targets = UiStateTargets {
+        status: status.clone(),
+        status_spinner: status_spinner.clone(),
+        record_button: record_button.clone(),
+        tray_controller: tray_controller.clone(),
+    };
 
     {
-        let status = status.clone();
         let state = state.clone();
         let overlay = overlay.clone();
         let transcript_buffer = transcript_buffer.clone();
         let settings_autopaste_switch = settings_autopaste_switch.clone();
-        let record_button = record_button.clone();
         let window = window.clone();
         let app = app.clone();
-        let tray_controller = tray_controller.clone();
-        let status_spinner = status_spinner.clone();
+        let ui_state_targets = ui_state_targets.clone();
         let recording_started_at = recording_started_at.clone();
         let current_transcription_id = current_transcription_id.clone();
         let elapsed_label = elapsed_label.clone();
@@ -522,13 +252,7 @@ pub fn build_ui(app: &adw::Application) {
                         *current_transcription_id.borrow_mut() = None;
                         *state.borrow_mut() = AppState::Idle;
                         *recording_started_at.borrow_mut() = None;
-                        status.set_label(AppState::Idle.label());
-                        status_spinner.stop();
-                        record_button.set_label("Start Recording");
-                        record_button.set_sensitive(true);
-                        if let Some(controller) = &tray_controller {
-                            controller.set_status(AppState::Idle.label());
-                        }
+                        apply_app_state(AppState::Idle, &ui_state_targets);
 
                         match result {
                             Ok(transcript) => {
@@ -543,27 +267,27 @@ pub fn build_ui(app: &adw::Application) {
                                 transcript_buffer.set_text(&transcript);
 
                                 if let Err(err) = clipboard::set_text(&transcript) {
-                                    add_error_toast(
+                                    add_error_with_diagnostics_refresh(
                                         &reporter,
                                         &overlay,
+                                        &refresh_diagnostics,
                                         "clipboard",
                                         &format!("Clipboard error: {err}"),
                                     );
-                                    refresh_diagnostics();
                                 } else if settings_autopaste_switch.is_active() {
                                     if window.is_active() {
                                         match paste::trigger_ctrl_v() {
                                             Ok(()) => add_toast(&overlay, "Transcribed and pasted"),
                                             Err(err) => {
-                                                add_error_toast(
+                                                add_error_with_diagnostics_refresh(
                                                     &reporter,
                                                     &overlay,
+                                                    &refresh_diagnostics,
                                                     "paste",
                                                     &format!(
                                                         "Copied only. Auto-paste unavailable: {err}"
                                                     ),
                                                 );
-                                                refresh_diagnostics();
                                             }
                                         }
                                     } else {
@@ -579,15 +303,16 @@ pub fn build_ui(app: &adw::Application) {
                             Err(err) => {
                                 transcript_buffer.set_text("");
                                 *state.borrow_mut() = AppState::Error;
-                                status.set_label(AppState::Error.label());
-                                status_spinner.stop();
-                                if let Some(controller) = &tray_controller {
-                                    controller.set_status(AppState::Error.label());
-                                }
+                                apply_app_state(AppState::Error, &ui_state_targets);
                                 error_label.set_label(&err);
                                 error_revealer.set_reveal_child(true);
-                                add_error_toast(&reporter, &overlay, "transcription", &err);
-                                refresh_diagnostics();
+                                add_error_with_diagnostics_refresh(
+                                    &reporter,
+                                    &overlay,
+                                    &refresh_diagnostics,
+                                    "transcription",
+                                    &err,
+                                );
                             }
                         }
                     }
@@ -608,7 +333,6 @@ pub fn build_ui(app: &adw::Application) {
     }
 
     let toggle_recording: Rc<dyn Fn()> = {
-        let status = status.clone();
         let overlay = overlay.clone();
         let sender = sender.clone();
         let config = config.clone();
@@ -618,9 +342,7 @@ pub fn build_ui(app: &adw::Application) {
         let next_transcription_id = next_transcription_id.clone();
         let current_transcription_id = current_transcription_id.clone();
         let state = state.clone();
-        let record_button = record_button.clone();
-        let tray_controller = tray_controller.clone();
-        let status_spinner = status_spinner.clone();
+        let ui_state_targets = ui_state_targets.clone();
         let error_revealer = error_revealer.clone();
         let reporter = reporter.clone();
         let refresh_diagnostics = refresh_diagnostics.clone();
@@ -640,29 +362,20 @@ pub fn build_ui(app: &adw::Application) {
                         *active_session.borrow_mut() = Some(session);
                         *recording_started_at.borrow_mut() = Some(Instant::now());
                         *state.borrow_mut() = AppState::Recording;
-                        status.set_label(AppState::Recording.label());
-                        status_spinner.start();
-                        if let Some(controller) = &tray_controller {
-                            controller.set_status(AppState::Recording.label());
-                        }
-                        record_button.set_label("Stop Recording");
+                        apply_app_state(AppState::Recording, &ui_state_targets);
                         add_toast(&overlay, "Listening...");
                     }
                     Err(err) => {
                         *recording_started_at.borrow_mut() = None;
                         *state.borrow_mut() = AppState::Error;
-                        status.set_label(AppState::Error.label());
-                        status_spinner.stop();
-                        if let Some(controller) = &tray_controller {
-                            controller.set_status(AppState::Error.label());
-                        }
-                        add_error_toast(
+                        apply_app_state(AppState::Error, &ui_state_targets);
+                        add_error_with_diagnostics_refresh(
                             &reporter,
                             &overlay,
+                            &refresh_diagnostics,
                             "recorder",
                             &format!("Unable to record: {err}"),
                         );
-                        refresh_diagnostics();
                     }
                 }
                 return;
@@ -673,15 +386,9 @@ pub fn build_ui(app: &adw::Application) {
                 return;
             };
 
-            record_button.set_label("Start Recording");
-            record_button.set_sensitive(false);
             *recording_started_at.borrow_mut() = None;
             *state.borrow_mut() = AppState::Transcribing;
-            status.set_label(AppState::Transcribing.label());
-            status_spinner.start();
-            if let Some(controller) = &tray_controller {
-                controller.set_status(AppState::Transcribing.label());
-            }
+            apply_app_state(AppState::Transcribing, &ui_state_targets);
 
             let sender = sender.clone();
             let transcription_id = {
@@ -771,13 +478,13 @@ pub fn build_ui(app: &adw::Application) {
             let normalized_hotkey = match parse_hotkey_accel(&hotkey_entry.text()) {
                 Ok(v) => v,
                 Err(err) => {
-                    add_error_toast(
+                    add_error_with_diagnostics_refresh(
                         &reporter,
                         &overlay,
+                        &refresh_diagnostics,
                         "settings",
                         &format!("Invalid hotkey: {err}"),
                     );
-                    refresh_diagnostics();
                     return;
                 }
             };
@@ -795,8 +502,13 @@ pub fn build_ui(app: &adw::Application) {
                     if autopaste_enabled && !autopaste_available {
                         settings_autopaste_switch.set_active(false);
                     }
-                    add_error_toast(&reporter, &overlay, "settings", &err.to_string());
-                    refresh_diagnostics();
+                    add_error_with_diagnostics_refresh(
+                        &reporter,
+                        &overlay,
+                        &refresh_diagnostics,
+                        "settings",
+                        &err.to_string(),
+                    );
                     return;
                 }
             };
@@ -804,13 +516,13 @@ pub fn build_ui(app: &adw::Application) {
             let selected_log_level = match parse_log_level_selection(log_level_dropdown.selected()) {
                 Some(level) => level,
                 None => {
-                    add_error_toast(
+                    add_error_with_diagnostics_refresh(
                         &reporter,
                         &overlay,
+                        &refresh_diagnostics,
                         "settings",
                         "Invalid log level selection. Choose info or debug.",
                     );
-                    refresh_diagnostics();
                     return;
                 }
             };
@@ -819,13 +531,13 @@ pub fn build_ui(app: &adw::Application) {
             next_cfg.log_level = selected_log_level;
 
             if let Err(err) = next_cfg.save() {
-                add_error_toast(
+                add_error_with_diagnostics_refresh(
                     &reporter,
                     &overlay,
+                    &refresh_diagnostics,
                     "settings",
                     &format!("Failed to save settings: {err}"),
                 );
-                refresh_diagnostics();
                 return;
             }
 
@@ -874,16 +586,13 @@ pub fn build_ui(app: &adw::Application) {
         let refresh_diagnostics = refresh_diagnostics.clone();
         copy_diagnostics_button.connect_clicked(move |_| {
             refresh_diagnostics();
-            let bundle = diagnostics::diagnostics_bundle(
-                &config.borrow(),
-                &diagnostics_health.borrow(),
-                &reporter.snapshot(),
-            );
+            let bundle = diagnostics_bundle_snapshot(&config, &diagnostics_health, &reporter);
             match clipboard::set_text(&bundle) {
                 Ok(()) => add_toast(&overlay, "Copied diagnostics bundle"),
-                Err(err) => add_error_toast(
+                Err(err) => add_error_with_diagnostics_refresh(
                     &reporter,
                     &overlay,
+                    &refresh_diagnostics,
                     "diagnostics",
                     &format!("Clipboard error: {err}"),
                 ),
@@ -899,16 +608,13 @@ pub fn build_ui(app: &adw::Application) {
         let refresh_diagnostics = refresh_diagnostics.clone();
         export_diagnostics_button.connect_clicked(move |_| {
             refresh_diagnostics();
-            let bundle = diagnostics::diagnostics_bundle(
-                &config.borrow(),
-                &diagnostics_health.borrow(),
-                &reporter.snapshot(),
-            );
+            let bundle = diagnostics_bundle_snapshot(&config, &diagnostics_health, &reporter);
             match diagnostics::export_diagnostics_bundle(&bundle) {
                 Ok(path) => add_toast(&overlay, &format!("Diagnostics exported: {}", path.display())),
-                Err(err) => add_error_toast(
+                Err(err) => add_error_with_diagnostics_refresh(
                     &reporter,
                     &overlay,
+                    &refresh_diagnostics,
                     "diagnostics",
                     &format!("Failed to export diagnostics: {err}"),
                 ),
@@ -929,21 +635,18 @@ pub fn build_ui(app: &adw::Application) {
         let reporter = reporter.clone();
         let refresh_diagnostics = refresh_diagnostics.clone();
         copy_button.connect_clicked(move |_| {
-            let start = transcript_buffer.start_iter();
-            let end = transcript_buffer.end_iter();
-            let text = transcript_buffer.text(&start, &end, false).to_string();
-            if transcript_is_empty(&text) {
+            let Some(text) = current_transcript_text(&transcript_buffer) else {
                 add_toast(&overlay, "Nothing to copy yet");
                 return;
-            }
+            };
             if let Err(err) = clipboard::set_text(&text) {
-                add_error_toast(
+                add_error_with_diagnostics_refresh(
                     &reporter,
                     &overlay,
+                    &refresh_diagnostics,
                     "clipboard",
                     &format!("Clipboard error: {err}"),
                 );
-                refresh_diagnostics();
             } else {
                 add_toast(&overlay, "Copied transcript");
             }
@@ -956,35 +659,32 @@ pub fn build_ui(app: &adw::Application) {
         let reporter = reporter.clone();
         let refresh_diagnostics = refresh_diagnostics.clone();
         paste_button.connect_clicked(move |_| {
-            let start = transcript_buffer.start_iter();
-            let end = transcript_buffer.end_iter();
-            let text = transcript_buffer.text(&start, &end, false).to_string();
-            if transcript_is_empty(&text) {
+            let Some(text) = current_transcript_text(&transcript_buffer) else {
                 add_toast(&overlay, "Nothing to paste yet");
                 return;
-            }
+            };
 
             if let Err(err) = clipboard::set_text(&text) {
-                add_error_toast(
+                add_error_with_diagnostics_refresh(
                     &reporter,
                     &overlay,
+                    &refresh_diagnostics,
                     "clipboard",
                     &format!("Clipboard error: {err}"),
                 );
-                refresh_diagnostics();
                 return;
             }
 
             match paste::trigger_ctrl_v() {
                 Ok(()) => add_toast(&overlay, "Pasted transcript"),
                 Err(err) => {
-                    add_error_toast(
+                    add_error_with_diagnostics_refresh(
                         &reporter,
                         &overlay,
+                        &refresh_diagnostics,
                         "paste",
                         &format!("Copied only. Auto-paste unavailable: {err}"),
                     );
-                    refresh_diagnostics();
                 }
             }
         });
@@ -1077,6 +777,419 @@ fn should_hide_on_close(tray_available: bool) -> bool {
     tray_available
 }
 
+struct RecorderWidgets {
+    status_spinner: gtk::Spinner,
+    status: gtk::Label,
+    elapsed_label: gtk::Label,
+    record_button: gtk::Button,
+    recorder_hint: gtk::Label,
+    model_status_label: gtk::Label,
+    model_label: gtk::Label,
+    hotkey_label: gtk::Label,
+    transcript_buffer: gtk::TextBuffer,
+    copy_button: gtk::Button,
+    paste_button: gtk::Button,
+    clear_button: gtk::Button,
+    error_revealer: gtk::Revealer,
+    error_label: gtk::Label,
+    open_settings_button: gtk::Button,
+    dismiss_error_button: gtk::Button,
+}
+
+struct SettingsWidgets {
+    settings_autopaste_switch: gtk::Switch,
+    model_entry: gtk::Entry,
+    language_entry: gtk::Entry,
+    hotkey_entry: gtk::Entry,
+    log_level_dropdown: gtk::DropDown,
+    save_button: gtk::Button,
+    test_checks_button: gtk::Button,
+}
+
+struct DiagnosticsWidgets {
+    health_pw_record_label: gtk::Label,
+    health_wl_copy_label: gtk::Label,
+    health_ydotool_label: gtk::Label,
+    health_model_label: gtk::Label,
+    health_session_label: gtk::Label,
+    last_error_buffer: gtk::TextBuffer,
+    copy_diagnostics_button: gtk::Button,
+    export_diagnostics_button: gtk::Button,
+    refresh_diagnostics_button: gtk::Button,
+}
+
+#[derive(Clone)]
+struct UiStateTargets {
+    status: gtk::Label,
+    status_spinner: gtk::Spinner,
+    record_button: gtk::Button,
+    tray_controller: Option<crate::tray::TrayController>,
+}
+
+fn build_recorder_page(config: &AppConfig, autopaste_available: bool) -> (gtk::Box, RecorderWidgets) {
+    let recorder_page = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(16)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+
+    let title = gtk::Label::builder()
+        .label("Voice to Cursor")
+        .css_classes(["title-1"])
+        .xalign(0.0)
+        .build();
+    recorder_page.append(&title);
+
+    let subtitle = gtk::Label::builder()
+        .label("Record, transcribe locally, then paste where your cursor is.")
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    recorder_page.append(&subtitle);
+
+    let status_row = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    let status_spinner = gtk::Spinner::new();
+    status_spinner.set_spinning(false);
+    let status = gtk::Label::builder()
+        .label(AppState::Idle.label())
+        .xalign(0.0)
+        .build();
+    status_row.append(&status_spinner);
+    status_row.append(&status);
+    recorder_page.append(&status_row);
+
+    let elapsed_label = gtk::Label::builder()
+        .label("")
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .build();
+    recorder_page.append(&elapsed_label);
+
+    let record_button = gtk::Button::builder()
+        .label("Start Recording")
+        .hexpand(true)
+        .build();
+    record_button.add_css_class("suggested-action");
+    recorder_page.append(&record_button);
+
+    let recorder_hint = gtk::Label::builder()
+        .label(format_hotkey_tip(config))
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    recorder_page.append(&recorder_hint);
+
+    let model_status_label = gtk::Label::builder()
+        .label(format_model_status(config.model_path.is_file()))
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    recorder_page.append(&model_status_label);
+
+    let autopaste_status_label = gtk::Label::builder()
+        .label(format_autopaste_status(autopaste_available))
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    recorder_page.append(&autopaste_status_label);
+
+    let model_label = gtk::Label::builder()
+        .label(format!("Model: {}", config.model_path.display()))
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    recorder_page.append(&model_label);
+
+    let hotkey_label = gtk::Label::builder()
+        .label(format_hotkey_line(config))
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    recorder_page.append(&hotkey_label);
+
+    let transcript_title = gtk::Label::builder()
+        .label("Last transcript")
+        .xalign(0.0)
+        .build();
+    recorder_page.append(&transcript_title);
+
+    let transcript_hint = gtk::Label::builder()
+        .label("Your latest transcript appears here.")
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .build();
+    recorder_page.append(&transcript_hint);
+
+    let transcript_view = gtk::TextView::builder()
+        .editable(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .vexpand(true)
+        .build();
+    let transcript_buffer = gtk::TextBuffer::new(None);
+    transcript_view.set_buffer(Some(&transcript_buffer));
+    let transcript_scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .hexpand(true)
+        .min_content_height(180)
+        .child(&transcript_view)
+        .build();
+    recorder_page.append(&transcript_scroll);
+
+    let transcript_actions_row = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    let copy_button = gtk::Button::with_label("Copy");
+    let paste_button = gtk::Button::with_label("Paste");
+    let clear_button = gtk::Button::with_label("Clear");
+    transcript_actions_row.append(&copy_button);
+    transcript_actions_row.append(&paste_button);
+    transcript_actions_row.append(&clear_button);
+    recorder_page.append(&transcript_actions_row);
+
+    let error_revealer = gtk::Revealer::new();
+    error_revealer.set_reveal_child(false);
+    error_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+    let error_box = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    error_box.add_css_class("card");
+    let error_label = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
+    error_label.add_css_class("error");
+    let open_settings_button = gtk::Button::with_label("Open Settings");
+    let dismiss_error_button = gtk::Button::with_label("Dismiss");
+    error_box.append(&error_label);
+    error_box.append(&open_settings_button);
+    error_box.append(&dismiss_error_button);
+    error_revealer.set_child(Some(&error_box));
+    recorder_page.append(&error_revealer);
+
+    (
+        recorder_page,
+        RecorderWidgets {
+            status_spinner,
+            status,
+            elapsed_label,
+            record_button,
+            recorder_hint,
+            model_status_label,
+            model_label,
+            hotkey_label,
+            transcript_buffer,
+            copy_button,
+            paste_button,
+            clear_button,
+            error_revealer,
+            error_label,
+            open_settings_button,
+            dismiss_error_button,
+        },
+    )
+}
+
+fn build_settings_page(config: &AppConfig, autopaste_available: bool) -> (adw::PreferencesPage, SettingsWidgets) {
+    let settings_page = adw::PreferencesPage::new();
+
+    let settings_general_group = adw::PreferencesGroup::builder()
+        .title("General")
+        .description("Tune transcription and insertion behavior.")
+        .build();
+
+    let settings_autopaste_row = adw::ActionRow::builder()
+        .title("Auto-paste")
+        .subtitle("Automatically press Ctrl+V after transcription (optional: ydotool).")
+        .build();
+    let settings_autopaste_switch = gtk::Switch::builder()
+        .active(config.autopaste)
+        .valign(gtk::Align::Center)
+        .build();
+    settings_autopaste_switch.set_sensitive(autopaste_available);
+    settings_autopaste_row.add_suffix(&settings_autopaste_switch);
+    settings_general_group.add(&settings_autopaste_row);
+
+    let model_entry = gtk::Entry::builder()
+        .hexpand(true)
+        .text(config.model_path.display().to_string())
+        .placeholder_text("/home/user/.local/share/vdora/models/ggml-base.en.bin")
+        .build();
+    model_entry.set_width_chars(36);
+    let model_row = adw::ActionRow::builder()
+        .title("Model path")
+        .subtitle("Local Whisper model file path")
+        .build();
+    model_row.add_suffix(&model_entry);
+    settings_general_group.add(&model_row);
+
+    let language_entry = gtk::Entry::builder()
+        .hexpand(true)
+        .text(config.language.clone().unwrap_or_default())
+        .placeholder_text("auto (blank), en, es, ...")
+        .build();
+    language_entry.set_width_chars(16);
+    let language_row = adw::ActionRow::builder()
+        .title("Language")
+        .subtitle("Leave blank for auto-detect")
+        .build();
+    language_row.add_suffix(&language_entry);
+    settings_general_group.add(&language_row);
+
+    let hotkey_entry = gtk::Entry::builder()
+        .hexpand(true)
+        .text(config.hotkey.clone())
+        .placeholder_text("Ctrl+Alt+Space or <Ctrl><Alt>space")
+        .build();
+    hotkey_entry.set_width_chars(20);
+    let hotkey_row = adw::ActionRow::builder()
+        .title("Record toggle hotkey")
+        .subtitle("App-level shortcut; global behavior depends on session")
+        .build();
+    hotkey_row.add_suffix(&hotkey_entry);
+    settings_general_group.add(&hotkey_row);
+
+    let log_level_options = gtk::StringList::new(&["info", "debug"]);
+    let log_level_dropdown = gtk::DropDown::builder().model(&log_level_options).build();
+    log_level_dropdown.set_selected(log_level_to_index(config.log_level));
+    let log_level_row = adw::ActionRow::builder()
+        .title("Log level")
+        .subtitle("Applied on next launch (info or debug)")
+        .build();
+    log_level_row.add_suffix(&log_level_dropdown);
+    settings_general_group.add(&log_level_row);
+    settings_page.add(&settings_general_group);
+
+    let settings_actions_group = adw::PreferencesGroup::builder().title("Apply").build();
+
+    let save_button = gtk::Button::with_label("Save Settings");
+    save_button.add_css_class("suggested-action");
+    settings_actions_group.add(&save_button);
+
+    let test_checks_button = gtk::Button::with_label("Test Checks Now");
+    settings_actions_group.add(&test_checks_button);
+
+    let settings_hint = gtk::Label::builder()
+        .label(settings_hint_text())
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    settings_actions_group.add(&settings_hint);
+    settings_page.add(&settings_actions_group);
+
+    (
+        settings_page,
+        SettingsWidgets {
+            settings_autopaste_switch,
+            model_entry,
+            language_entry,
+            hotkey_entry,
+            log_level_dropdown,
+            save_button,
+            test_checks_button,
+        },
+    )
+}
+
+fn build_diagnostics_page() -> (gtk::Box, DiagnosticsWidgets) {
+    let diagnostics_page = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+
+    let diagnostics_title = gtk::Label::builder()
+        .label("Diagnostics")
+        .css_classes(["title-2"])
+        .xalign(0.0)
+        .build();
+    diagnostics_page.append(&diagnostics_title);
+
+    let diagnostics_subtitle = gtk::Label::builder()
+        .label("Dependency health, session details, and recent user-visible errors.")
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    diagnostics_page.append(&diagnostics_subtitle);
+
+    let health_pw_record_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+    let health_wl_copy_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+    let health_ydotool_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+    let health_model_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+    let health_session_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+
+    diagnostics_page.append(&health_session_label);
+    diagnostics_page.append(&health_pw_record_label);
+    diagnostics_page.append(&health_wl_copy_label);
+    diagnostics_page.append(&health_ydotool_label);
+    diagnostics_page.append(&health_model_label);
+
+    let last_error_title = gtk::Label::builder()
+        .label("Last errors")
+        .xalign(0.0)
+        .build();
+    diagnostics_page.append(&last_error_title);
+
+    let last_error_view = gtk::TextView::builder()
+        .editable(false)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .vexpand(true)
+        .build();
+    let last_error_buffer = gtk::TextBuffer::new(None);
+    last_error_buffer.set_text("No recent errors");
+    last_error_view.set_buffer(Some(&last_error_buffer));
+    let last_error_scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .hexpand(true)
+        .min_content_height(150)
+        .child(&last_error_view)
+        .build();
+    diagnostics_page.append(&last_error_scroll);
+
+    let diagnostics_actions_row = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    let copy_diagnostics_button = gtk::Button::with_label("Copy Diagnostics");
+    let export_diagnostics_button = gtk::Button::with_label("Export Log");
+    let refresh_diagnostics_button = gtk::Button::with_label("Refresh Checks");
+    diagnostics_actions_row.append(&copy_diagnostics_button);
+    diagnostics_actions_row.append(&export_diagnostics_button);
+    diagnostics_actions_row.append(&refresh_diagnostics_button);
+    diagnostics_page.append(&diagnostics_actions_row);
+
+    (
+        diagnostics_page,
+        DiagnosticsWidgets {
+            health_pw_record_label,
+            health_wl_copy_label,
+            health_ydotool_label,
+            health_model_label,
+            health_session_label,
+            last_error_buffer,
+            copy_diagnostics_button,
+            export_diagnostics_button,
+            refresh_diagnostics_button,
+        },
+    )
+}
+
 fn build_next_config(
     current: &AppConfig,
     model_text: &str,
@@ -1166,18 +1279,110 @@ fn add_error_toast(
     add_toast(overlay, text);
 }
 
+fn add_error_with_diagnostics_refresh(
+    reporter: &diagnostics::Reporter,
+    overlay: &adw::ToastOverlay,
+    refresh_diagnostics: &Rc<dyn Fn()>,
+    source: &str,
+    text: &str,
+) {
+    add_error_toast(reporter, overlay, source, text);
+    refresh_diagnostics();
+}
+
+fn current_transcript_text(buffer: &gtk::TextBuffer) -> Option<String> {
+    let start = buffer.start_iter();
+    let end = buffer.end_iter();
+    let text = buffer.text(&start, &end, false).to_string();
+    if transcript_is_empty(&text) {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn diagnostics_bundle_snapshot(
+    config: &Rc<RefCell<AppConfig>>,
+    diagnostics_health: &Rc<RefCell<diagnostics::HealthSnapshot>>,
+    reporter: &diagnostics::Reporter,
+) -> String {
+    diagnostics::diagnostics_bundle(
+        &config.borrow(),
+        &diagnostics_health.borrow(),
+        &reporter.snapshot(),
+    )
+}
+
+fn set_health_labels(
+    health: &diagnostics::HealthSnapshot,
+    health_session_label: &gtk::Label,
+    health_pw_record_label: &gtk::Label,
+    health_wl_copy_label: &gtk::Label,
+    health_ydotool_label: &gtk::Label,
+    health_model_label: &gtk::Label,
+) {
+    health_session_label.set_label(&format!(
+        "Session type: {}",
+        if health.session_type.trim().is_empty() {
+            "unknown"
+        } else {
+            &health.session_type
+        }
+    ));
+    health_pw_record_label.set_label(&format!(
+        "pw-record: {}",
+        status_word(health.pw_record_available)
+    ));
+    if let Some(wl_copy_available) = health.wl_copy_available {
+        health_wl_copy_label.set_label(&format!("wl-copy: {}", status_word(wl_copy_available)));
+    } else {
+        health_wl_copy_label.set_label("wl-copy: n/a (non-Wayland session)");
+    }
+    health_ydotool_label.set_label(&format!(
+        "ydotool: {}",
+        status_word(health.ydotool_available)
+    ));
+    health_model_label.set_label(&format!("model file: {}", status_word(health.model_ready)));
+}
+
+fn status_word(available: bool) -> &'static str {
+    if available {
+        "available"
+    } else {
+        "missing"
+    }
+}
+
+fn apply_app_state(
+    next_state: AppState,
+    targets: &UiStateTargets,
+) {
+    targets.status.set_label(next_state.label());
+    match next_state {
+        AppState::Idle | AppState::Error => {
+            targets.status_spinner.stop();
+            targets.record_button.set_label("Start Recording");
+            targets.record_button.set_sensitive(true);
+        }
+        AppState::Recording => {
+            targets.status_spinner.start();
+            targets.record_button.set_label("Stop Recording");
+            targets.record_button.set_sensitive(true);
+        }
+        AppState::Transcribing => {
+            targets.status_spinner.start();
+            targets.record_button.set_label("Start Recording");
+            targets.record_button.set_sensitive(false);
+        }
+    }
+    if let Some(controller) = targets.tray_controller.as_ref() {
+        controller.set_status(next_state.label());
+    }
+}
+
 fn transcribe_session(session: RecordingSession, config: AppConfig) -> Result<String> {
     let recording = session.stop().context("failed to finish audio recording")?;
     transcribe_file(recording.path(), &config)
-}
-
-fn validate_model_path(path: &PathBuf) -> Result<()> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("failed to read model metadata at {}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(anyhow!("model path must point to a regular file"));
-    }
-    Ok(())
 }
 
 fn transcribe_file(wav_path: &std::path::Path, config: &AppConfig) -> Result<String> {

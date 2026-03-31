@@ -20,32 +20,12 @@ impl WhisperService {
     }
 
     pub fn transcribe_file(&self, wav_path: &Path) -> Result<String> {
-        if !self.model_path.exists() {
-            return Err(anyhow!(
-                "missing model file at {}",
-                self.model_path.display()
-            ));
-        }
-        ensure_model_path_is_safe(&self.model_path)?;
-
+        validate_model_path(&self.model_path)?;
         let audio = load_wav_file(wav_path)?;
-        let context = WhisperContext::new_with_params(
-            self.model_path
-                .to_str()
-                .ok_or_else(|| anyhow!("invalid model path"))?,
-            WhisperContextParameters::default(),
-        )
-        .context("failed to initialize whisper context")?;
-
+        let context = build_context(&self.model_path)?;
         let mut state = context.create_state().context("failed to create whisper state")?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_translate(false);
-        params.set_n_threads(4);
-
+        configure_full_params(&mut params);
         if let Some(language) = self.language.as_deref() {
             params.set_language(Some(language));
         }
@@ -54,21 +34,58 @@ impl WhisperService {
             .full(params, &audio)
             .context("whisper failed to transcribe audio")?;
 
-        let segments = state
-            .full_n_segments()
-            .context("failed to get segment count")?;
-        let mut transcript = String::new();
-        for idx in 0..segments {
-            let segment = state
-                .full_get_segment_text(idx)
-                .context("failed to read segment text")?;
-            transcript.push_str(segment.trim());
-            transcript.push(' ');
-        }
+        let transcript = collect_segments(&state)?;
 
         let cleaned = normalize_transcript(&transcript);
         Ok(cleaned)
     }
+}
+
+pub fn validate_model_path(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Err(anyhow!("missing model file at {}", path.display()));
+    }
+
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to read model metadata at {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(anyhow!("model path must point to a regular file"));
+    }
+    Ok(())
+}
+
+fn build_context(model_path: &Path) -> Result<WhisperContext> {
+    WhisperContext::new_with_params(
+        model_path
+            .to_str()
+            .ok_or_else(|| anyhow!("invalid model path"))?,
+        WhisperContextParameters::default(),
+    )
+    .context("failed to initialize whisper context")
+}
+
+fn configure_full_params(params: &mut FullParams<'_, '_>) {
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_translate(false);
+    params.set_n_threads(4);
+}
+
+fn collect_segments(state: &whisper_rs::WhisperState) -> Result<String> {
+    let segments = state
+        .full_n_segments()
+        .context("failed to get segment count")?;
+    let mut transcript = String::new();
+    for idx in 0..segments {
+        let segment = state
+            .full_get_segment_text(idx)
+            .context("failed to read segment text")?;
+        transcript.push_str(segment.trim());
+        transcript.push(' ');
+    }
+    Ok(transcript)
 }
 
 fn normalize_transcript(input: &str) -> String {
@@ -167,13 +184,4 @@ fn load_wav_file(path: &Path) -> Result<Vec<f32>> {
     }
 
     Ok(mono)
-}
-
-fn ensure_model_path_is_safe(path: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("failed to read model metadata at {}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(anyhow!("model path must point to a regular file"));
-    }
-    Ok(())
 }
