@@ -53,7 +53,6 @@ impl Reporter {
     pub fn snapshot(&self) -> Vec<ReportEntry> {
         self.entries.borrow().iter().cloned().collect()
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -80,7 +79,8 @@ impl HealthSnapshot {
 
 pub fn collect_health(model_ready: bool) -> HealthSnapshot {
     let session_type = env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string());
-    let is_wayland = session_type.eq_ignore_ascii_case("wayland") || env::var_os("WAYLAND_DISPLAY").is_some();
+    let is_wayland =
+        session_type.eq_ignore_ascii_case("wayland") || env::var_os("WAYLAND_DISPLAY").is_some();
 
     HealthSnapshot {
         session_type,
@@ -114,12 +114,19 @@ pub fn health_lines(health: &HealthSnapshot) -> Vec<String> {
     } else {
         lines.push("wl-copy: n/a (non-Wayland session)".to_string());
     }
-    lines.push(format!("ydotool: {}", bool_status(health.ydotool_available)));
+    lines.push(format!(
+        "ydotool: {}",
+        bool_status(health.ydotool_available)
+    ));
     lines.push(format!("model file: {}", bool_status(health.model_ready)));
     lines
 }
 
-pub fn diagnostics_bundle(config: &AppConfig, health: &HealthSnapshot, errors: &[ReportEntry]) -> String {
+pub fn diagnostics_bundle(
+    config: &AppConfig,
+    health: &HealthSnapshot,
+    errors: &[ReportEntry],
+) -> String {
     let mut lines = vec![
         "Vdora diagnostics bundle".to_string(),
         format!("generated_at_unix: {}", now_unix_seconds()),
@@ -131,7 +138,13 @@ pub fn diagnostics_bundle(config: &AppConfig, health: &HealthSnapshot, errors: &
         format!("hotkey: {}", config.hotkey),
         format!("log_level: {}", config.log_level.as_ui_label()),
         format!("pw_record_available: {}", health.pw_record_available),
-        format!("wl_copy_available: {}", health.wl_copy_available.map(|v| v.to_string()).unwrap_or_else(|| "n/a".to_string())),
+        format!(
+            "wl_copy_available: {}",
+            health
+                .wl_copy_available
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        ),
         format!("ydotool_available: {}", health.ydotool_available),
         format!("model_ready: {}", health.model_ready),
         "errors:".to_string(),
@@ -162,8 +175,9 @@ pub fn export_diagnostics_bundle(bundle: &str) -> Result<PathBuf> {
             Ok(()) => return Ok(path),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to write diagnostics bundle at {}", path.display()));
+                return Err(err).with_context(|| {
+                    format!("failed to write diagnostics bundle at {}", path.display())
+                });
             }
         }
     }
@@ -217,8 +231,12 @@ fn write_bundle_create_new(path: &PathBuf, bundle: &str) -> std::io::Result<()> 
 }
 
 fn ensure_private_state_dir(state_dir: &PathBuf) -> Result<()> {
-    fs::create_dir_all(state_dir)
-        .with_context(|| format!("failed to create diagnostics directory at {}", state_dir.display()))?;
+    fs::create_dir_all(state_dir).with_context(|| {
+        format!(
+            "failed to create diagnostics directory at {}",
+            state_dir.display()
+        )
+    })?;
 
     #[cfg(unix)]
     {
@@ -235,11 +253,7 @@ fn ensure_private_state_dir(state_dir: &PathBuf) -> Result<()> {
 }
 
 fn bool_status(available: bool) -> &'static str {
-    if available {
-        "available"
-    } else {
-        "missing"
-    }
+    if available { "available" } else { "missing" }
 }
 
 fn now_unix_seconds() -> u64 {
@@ -259,8 +273,8 @@ fn now_unix_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        diagnostics_bundle, diagnostics_file_name, health_lines, HealthSnapshot, ReportEntry,
-        Reporter,
+        HealthSnapshot, ReportEntry, Reporter, diagnostics_bundle, diagnostics_file_name,
+        health_lines,
     };
     use crate::config::{AppConfig, LogLevel};
 

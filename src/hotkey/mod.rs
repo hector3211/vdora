@@ -8,7 +8,10 @@ pub fn default_hotkey() -> &'static str {
 }
 
 pub fn global_hotkeys_supported() -> bool {
-    matches!(std::env::var("XDG_SESSION_TYPE").ok().as_deref(), Some("x11"))
+    matches!(
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        Some("x11")
+    )
 }
 
 pub fn to_gtk_accelerator(input: &str) -> Result<String, &'static str> {

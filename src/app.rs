@@ -8,14 +8,13 @@ use std::{
 };
 
 use adw::prelude::*;
-use anyhow::{anyhow, Context, Result};
-use gtk::{gdk, gio, glib, Orientation};
+use anyhow::{Context, Result, anyhow};
+use gtk::{Orientation, gdk, gio, glib};
 
 use crate::{
-    audio::recorder::{cleanup_stale_recordings, Recorder, RecordingSession},
+    audio::recorder::{Recorder, RecordingSession, cleanup_stale_recordings},
     config::{AppConfig, LogLevel},
-    diagnostics,
-    hotkey,
+    diagnostics, hotkey,
     insert::{clipboard, paste},
     state::AppState,
     stt::whisper::{WhisperService, validate_model_path},
@@ -25,7 +24,10 @@ use crate::{
 const STALE_RECORDING_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
 enum AppMessage {
-    TranscriptionFinished { id: u64, result: Result<String, String> },
+    TranscriptionFinished {
+        id: u64,
+        result: Result<String, String>,
+    },
 }
 
 pub fn build_ui(app: &adw::Application) {
@@ -513,7 +515,8 @@ pub fn build_ui(app: &adw::Application) {
                 }
             };
 
-            let selected_log_level = match parse_log_level_selection(log_level_dropdown.selected()) {
+            let selected_log_level = match parse_log_level_selection(log_level_dropdown.selected())
+            {
                 Some(level) => level,
                 None => {
                     add_error_with_diagnostics_refresh(
@@ -549,7 +552,8 @@ pub fn build_ui(app: &adw::Application) {
             }
 
             model_label.set_label(&format!("Model: {}", config.borrow().model_path.display()));
-            model_status_label.set_label(&format_model_status(config.borrow().model_path.is_file()));
+            model_status_label
+                .set_label(&format_model_status(config.borrow().model_path.is_file()));
             hotkey_label.set_label(&format_hotkey_line(&config.borrow()));
             recorder_hint.set_label(&format_hotkey_tip(&config.borrow()));
             settings_autopaste_switch.set_active(config.borrow().autopaste);
@@ -610,7 +614,10 @@ pub fn build_ui(app: &adw::Application) {
             refresh_diagnostics();
             let bundle = diagnostics_bundle_snapshot(&config, &diagnostics_health, &reporter);
             match diagnostics::export_diagnostics_bundle(&bundle) {
-                Ok(path) => add_toast(&overlay, &format!("Diagnostics exported: {}", path.display())),
+                Ok(path) => add_toast(
+                    &overlay,
+                    &format!("Diagnostics exported: {}", path.display()),
+                ),
                 Err(err) => add_error_with_diagnostics_refresh(
                     &reporter,
                     &overlay,
@@ -826,7 +833,10 @@ struct UiStateTargets {
     tray_controller: Option<crate::tray::TrayController>,
 }
 
-fn build_recorder_page(config: &AppConfig, autopaste_available: bool) -> (gtk::Box, RecorderWidgets) {
+fn build_recorder_page(
+    config: &AppConfig,
+    autopaste_available: bool,
+) -> (gtk::Box, RecorderWidgets) {
     let recorder_page = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .spacing(16)
@@ -967,7 +977,11 @@ fn build_recorder_page(config: &AppConfig, autopaste_available: bool) -> (gtk::B
         .spacing(8)
         .build();
     error_box.add_css_class("card");
-    let error_label = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
+    let error_label = gtk::Label::builder()
+        .xalign(0.0)
+        .hexpand(true)
+        .wrap(true)
+        .build();
     error_label.add_css_class("error");
     let open_settings_button = gtk::Button::with_label("Open Settings");
     let dismiss_error_button = gtk::Button::with_label("Dismiss");
@@ -1000,7 +1014,10 @@ fn build_recorder_page(config: &AppConfig, autopaste_available: bool) -> (gtk::B
     )
 }
 
-fn build_settings_page(config: &AppConfig, autopaste_available: bool) -> (adw::PreferencesPage, SettingsWidgets) {
+fn build_settings_page(
+    config: &AppConfig,
+    autopaste_available: bool,
+) -> (adw::PreferencesPage, SettingsWidgets) {
     let settings_page = adw::PreferencesPage::new();
 
     let settings_general_group = adw::PreferencesGroup::builder()
@@ -1241,7 +1258,10 @@ fn format_hotkey_line(config: &AppConfig) -> String {
 }
 
 fn format_hotkey_tip(config: &AppConfig) -> String {
-    format!("Tip: use {} to start or stop recording quickly.", config.hotkey)
+    format!(
+        "Tip: use {} to start or stop recording quickly.",
+        config.hotkey
+    )
 }
 
 fn format_model_status(is_ready: bool) -> &'static str {
@@ -1346,17 +1366,10 @@ fn set_health_labels(
 }
 
 fn status_word(available: bool) -> &'static str {
-    if available {
-        "available"
-    } else {
-        "missing"
-    }
+    if available { "available" } else { "missing" }
 }
 
-fn apply_app_state(
-    next_state: AppState,
-    targets: &UiStateTargets,
-) {
+fn apply_app_state(next_state: AppState, targets: &UiStateTargets) {
     targets.status.set_label(next_state.label());
     match next_state {
         AppState::Idle | AppState::Error => {
@@ -1393,9 +1406,8 @@ fn transcribe_file(wav_path: &std::path::Path, config: &AppConfig) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        build_next_config, can_toggle_recording, parse_log_level_selection,
-        should_hide_on_close, should_ignore_transcription_result, should_start_hidden,
-        transcript_is_empty,
+        build_next_config, can_toggle_recording, parse_log_level_selection, should_hide_on_close,
+        should_ignore_transcription_result, should_start_hidden, transcript_is_empty,
     };
     use crate::config::{AppConfig, LogLevel};
     use crate::state::AppState;
@@ -1430,15 +1442,8 @@ mod tests {
         let model_path = model.path().display().to_string();
         let current = AppConfig::default();
 
-        let next = build_next_config(
-            &current,
-            &model_path,
-            "en",
-            "<Ctrl><Shift>r",
-            true,
-            true,
-        )
-        .expect("next config should build");
+        let next = build_next_config(&current, &model_path, "en", "<Ctrl><Shift>r", true, true)
+            .expect("next config should build");
 
         assert!(!current.autopaste);
         assert_eq!(next.model_path, model.path());
@@ -1478,15 +1483,8 @@ mod tests {
         let mut current = AppConfig::default();
         current.log_level = LogLevel::Debug;
 
-        let next = build_next_config(
-            &current,
-            &model_path,
-            "",
-            "<Ctrl><Alt>space",
-            false,
-            true,
-        )
-        .expect("next config should build");
+        let next = build_next_config(&current, &model_path, "", "<Ctrl><Alt>space", false, true)
+            .expect("next config should build");
 
         assert_eq!(next.log_level, LogLevel::Debug);
     }

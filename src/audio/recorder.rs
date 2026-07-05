@@ -23,6 +23,14 @@ impl Recorder {
     }
 
     pub fn start(&self) -> Result<RecordingSession> {
+        self.start_inner(None)
+    }
+
+    pub fn start_with_max_duration(&self, max_duration: Duration) -> Result<RecordingSession> {
+        self.start_inner(Some(max_duration))
+    }
+
+    fn start_inner(&self, max_duration: Option<Duration>) -> Result<RecordingSession> {
         let recorder_binary = locate_recorder_binary()?;
         let temp_file = Builder::new()
             .prefix("vdora-")
@@ -38,8 +46,16 @@ impl Recorder {
             .arg("--channels")
             .arg("1")
             .arg("--format")
-            .arg("s16")
-            .arg(&output_path)
+            .arg("s16");
+
+        if let Some(max_duration) = max_duration {
+            let sample_count = max_duration
+                .as_secs()
+                .saturating_mul(REQUIRED_SAMPLE_RATE as u64);
+            cmd.arg("--sample-count").arg(sample_count.to_string());
+        }
+
+        cmd.arg(&output_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -72,32 +88,52 @@ impl RecordedAudio {
 }
 
 impl RecordingSession {
+    pub fn recorder_pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn stop(self) -> Result<RecordedAudio> {
         let RecordingSession {
             child,
             output_path,
-            mut temp_path,
+            temp_path,
         } = self;
         signal_stop(&child);
-        let output = wait_for_exit(child)?;
-        if recording_file_ready(&output_path)? {
-            log_non_success_if_valid(&output);
-            let temp_path = temp_path
-                .take()
-                .ok_or_else(|| anyhow!("recording temp path unexpectedly missing"))?;
+        finish_recording(child, output_path, temp_path)
+    }
 
-            Ok(RecordedAudio {
-                _temp_path: temp_path,
-                path: output_path,
-            })
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(anyhow!(
-                "recording failed (status: {}): {}",
-                output.status,
-                stderr.trim()
-            ))
-        }
+    pub fn wait(self) -> Result<RecordedAudio> {
+        let RecordingSession {
+            child,
+            output_path,
+            temp_path,
+        } = self;
+        finish_recording(child, output_path, temp_path)
+    }
+}
+
+fn finish_recording(
+    child: Child,
+    output_path: PathBuf,
+    temp_path: Option<TempPath>,
+) -> Result<RecordedAudio> {
+    let output = wait_for_exit(child)?;
+    if recording_file_ready(&output_path)? {
+        log_non_success_if_valid(&output);
+        let temp_path =
+            temp_path.ok_or_else(|| anyhow!("recording temp path unexpectedly missing"))?;
+
+        Ok(RecordedAudio {
+            _temp_path: temp_path,
+            path: output_path,
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow!(
+            "recording failed (status: {}): {}",
+            output.status,
+            stderr.trim()
+        ))
     }
 }
 
@@ -213,14 +249,24 @@ mod tests {
 
     #[test]
     fn matches_vdora_temp_recording_names() {
-        assert!(is_vdora_recording_path(std::path::Path::new("/tmp/vdora-abc.wav")));
-        assert!(is_vdora_recording_path(std::path::Path::new("vdora-123.wav")));
+        assert!(is_vdora_recording_path(std::path::Path::new(
+            "/tmp/vdora-abc.wav"
+        )));
+        assert!(is_vdora_recording_path(std::path::Path::new(
+            "vdora-123.wav"
+        )));
     }
 
     #[test]
     fn ignores_non_vdora_temp_recordings() {
-        assert!(!is_vdora_recording_path(std::path::Path::new("/tmp/vdora-abc.mp3")));
-        assert!(!is_vdora_recording_path(std::path::Path::new("/tmp/other-abc.wav")));
-        assert!(!is_vdora_recording_path(std::path::Path::new("/tmp/vdora.wav")));
+        assert!(!is_vdora_recording_path(std::path::Path::new(
+            "/tmp/vdora-abc.mp3"
+        )));
+        assert!(!is_vdora_recording_path(std::path::Path::new(
+            "/tmp/other-abc.wav"
+        )));
+        assert!(!is_vdora_recording_path(std::path::Path::new(
+            "/tmp/vdora.wav"
+        )));
     }
 }

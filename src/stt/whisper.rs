@@ -23,7 +23,9 @@ impl WhisperService {
         validate_model_path(&self.model_path)?;
         let audio = load_wav_file(wav_path)?;
         let context = build_context(&self.model_path)?;
-        let mut state = context.create_state().context("failed to create whisper state")?;
+        let mut state = context
+            .create_state()
+            .context("failed to create whisper state")?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         configure_full_params(&mut params);
         if let Some(language) = self.language.as_deref() {
@@ -74,15 +76,18 @@ fn configure_full_params(params: &mut FullParams<'_, '_>) {
 }
 
 fn collect_segments(state: &whisper_rs::WhisperState) -> Result<String> {
-    let segments = state
-        .full_n_segments()
-        .context("failed to get segment count")?;
+    let segments = state.full_n_segments();
     let mut transcript = String::new();
     for idx in 0..segments {
         let segment = state
-            .full_get_segment_text(idx)
-            .context("failed to read segment text")?;
-        transcript.push_str(segment.trim());
+            .get_segment(idx)
+            .ok_or_else(|| anyhow!("segment index {idx} out of bounds"))?;
+        transcript.push_str(
+            segment
+                .to_str_lossy()
+                .map_err(|err| anyhow!("failed to read segment text: {err}"))?
+                .trim(),
+        );
         transcript.push(' ');
     }
     Ok(transcript)

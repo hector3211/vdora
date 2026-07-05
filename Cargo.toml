@@ -29,5 +29,7 @@ tempfile = "3.13"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 which = "6.0"
-whisper-rs = "0.12"
+whisper-rs = "0.16"
 ksni = "0.2"
+fs2 = "0.4.3"
+ureq = "3.3.0"

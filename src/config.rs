@@ -102,7 +102,9 @@ impl AppConfig {
 
 fn default_model_path() -> PathBuf {
     if let Some(project_dirs) = ProjectDirs::from(APP_QUALIFIER, APP_ORG, APP_NAME) {
-        project_dirs.data_local_dir().join("models/ggml-base.en.bin")
+        project_dirs
+            .data_local_dir()
+            .join("models/ggml-base.en.bin")
     } else {
         PathBuf::from("./models/ggml-base.en.bin")
     }

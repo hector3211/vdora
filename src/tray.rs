@@ -2,8 +2,8 @@ use std::sync::mpsc::Sender;
 use std::{env, path::PathBuf};
 
 use anyhow::Result;
-use ksni::menu::StandardItem;
 use ksni::ToolTip;
+use ksni::menu::StandardItem;
 
 const MENU_SHOW_WINDOW: &str = "Show Window";
 const MENU_HIDE_WINDOW: &str = "Hide Window";
@@ -116,7 +116,10 @@ fn resolve_icon_name() -> String {
 }
 
 fn app_icon_exists() -> bool {
-    let mut roots = vec![PathBuf::from("/usr/share/icons"), PathBuf::from("/usr/local/share/icons")];
+    let mut roots = vec![
+        PathBuf::from("/usr/share/icons"),
+        PathBuf::from("/usr/local/share/icons"),
+    ];
     if let Ok(home) = env::var("HOME") {
         roots.push(PathBuf::from(home).join(".local/share/icons"));
     }
@@ -153,7 +156,7 @@ fn icon_name_for_status(base_icon_name: &str, status: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{icon_name_for_status, MENU_HIDE_WINDOW, MENU_QUIT, MENU_SHOW_WINDOW};
+    use super::{MENU_HIDE_WINDOW, MENU_QUIT, MENU_SHOW_WINDOW, icon_name_for_status};
 
     #[test]
     fn tray_menu_labels_do_not_expose_record_toggle() {

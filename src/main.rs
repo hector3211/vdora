@@ -4,6 +4,7 @@ mod config;
 mod diagnostics;
 mod hotkey;
 mod insert;
+mod oneshot;
 mod state;
 mod stt;
 mod tray;
@@ -15,12 +16,26 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 fn main() -> Result<()> {
     init_tracing();
 
-    let app = adw::Application::builder()
-        .application_id("com.vdora.App")
-        .build();
+    match oneshot::parse_args() {
+        Ok(oneshot::Mode::Gui) => {
+            let app = adw::Application::builder()
+                .application_id("com.vdora.App")
+                .build();
 
-    app.connect_activate(app::build_ui);
-    app.run();
+            app.connect_activate(app::build_ui);
+            app.run();
+        }
+        Ok(oneshot::Mode::Run(options)) => {
+            oneshot::run(options)?;
+        }
+        Ok(oneshot::Mode::Help) => {
+            oneshot::print_help();
+        }
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(2);
+        }
+    }
 
     Ok(())
 }
