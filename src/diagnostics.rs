@@ -95,6 +95,7 @@ pub fn collect_health(model_ready: bool) -> HealthSnapshot {
     }
 }
 
+#[cfg(test)]
 pub fn health_lines(health: &HealthSnapshot) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(
@@ -252,6 +253,7 @@ fn ensure_private_state_dir(state_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn bool_status(available: bool) -> &'static str {
     if available { "available" } else { "missing" }
 }

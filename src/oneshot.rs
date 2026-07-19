@@ -3,7 +3,6 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -21,14 +20,12 @@ use crate::{
 };
 
 const APP_TITLE: &str = "Vdora";
-const DEFAULT_DURATION_SECS: u64 = 30;
 const DEFAULT_MODEL_FILE: &str = "ggml-base.en.bin";
 const DEFAULT_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    pub duration: Duration,
     pub no_notify: bool,
 }
 
@@ -56,19 +53,23 @@ pub enum Mode {
 pub fn parse_args() -> Result<Mode> {
     let mut args = std::env::args().skip(1).peekable();
     let mut oneshot = false;
-    let mut duration = DEFAULT_DURATION_SECS;
     let mut no_notify = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--oneshot" | "voice" => oneshot = true,
             "--duration" | "-d" => {
+                // Keep accepting existing desktop shortcuts, but recording now
+                // continues until the shortcut is toggled again.
                 let value = args
                     .next()
                     .ok_or_else(|| anyhow!("{arg} requires a value in seconds"))?;
-                duration = value
+                let duration = value
                     .parse::<u64>()
                     .with_context(|| format!("invalid duration: {value}"))?;
+                if duration == 0 {
+                    return Err(anyhow!("duration must be greater than zero"));
+                }
             }
             "--no-notify" => no_notify = true,
             "--help" | "-h" => return Ok(Mode::Help),
@@ -80,19 +81,12 @@ pub fn parse_args() -> Result<Mode> {
         return Ok(Mode::Gui);
     }
 
-    if duration == 0 {
-        return Err(anyhow!("duration must be greater than zero"));
-    }
-
-    Ok(Mode::Run(Options {
-        duration: Duration::from_secs(duration),
-        no_notify,
-    }))
+    Ok(Mode::Run(Options { no_notify }))
 }
 
 pub fn print_help() {
     println!(
-        "Vdora\n\nUsage:\n  vdora                       Launch the GUI\n  vdora --oneshot [-d 30]     Record for up to 30s, transcribe, copy\n  vdora voice [-d 30]         Alias for --oneshot\n\nOptions:\n  -d, --duration SECONDS      Maximum recording length, default 30\n      --no-notify             Disable desktop notifications\n  -h, --help                  Show this help\n\nOneshot behavior:\n  Press shortcut once to start recording. Run the same command again to stop early."
+        "Vdora\n\nUsage:\n  vdora                       Launch the GUI\n  vdora --oneshot             Record until toggled, transcribe, copy\n  vdora voice                 Alias for --oneshot\n\nOptions:\n      --no-notify             Disable desktop notifications\n  -h, --help                  Show this help\n\nOneshot behavior:\n  Press the shortcut once to start recording. Press it again to stop."
     );
 }
 
@@ -107,20 +101,14 @@ pub fn run(options: Options) -> Result<()> {
     let recorder = Recorder::new();
     let current_pid = std::process::id();
 
-    eprintln!(
-        "Recording up to {} seconds. Run vdora --oneshot again to stop early.",
-        options.duration.as_secs()
-    );
+    eprintln!("Recording. Run vdora --oneshot again to stop.");
     notify(
         &paths,
         notifications,
-        &format!(
-            "Recording up to {}s. Press shortcut again to stop.",
-            options.duration.as_secs()
-        ),
+        "Recording. Press shortcut again to stop.",
     );
 
-    let session = recorder.start_with_max_duration(options.duration)?;
+    let session = recorder.start()?;
     write_state(
         &paths,
         &State {

@@ -23,14 +23,6 @@ impl Recorder {
     }
 
     pub fn start(&self) -> Result<RecordingSession> {
-        self.start_inner(None)
-    }
-
-    pub fn start_with_max_duration(&self, max_duration: Duration) -> Result<RecordingSession> {
-        self.start_inner(Some(max_duration))
-    }
-
-    fn start_inner(&self, max_duration: Option<Duration>) -> Result<RecordingSession> {
         let recorder_binary = locate_recorder_binary()?;
         let temp_file = Builder::new()
             .prefix("vdora-")
@@ -47,13 +39,6 @@ impl Recorder {
             .arg("1")
             .arg("--format")
             .arg("s16");
-
-        if let Some(max_duration) = max_duration {
-            let sample_count = max_duration
-                .as_secs()
-                .saturating_mul(REQUIRED_SAMPLE_RATE as u64);
-            cmd.arg("--sample-count").arg(sample_count.to_string());
-        }
 
         cmd.arg(&output_path)
             .stdin(Stdio::null())

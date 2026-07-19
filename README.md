@@ -22,7 +22,7 @@ Common uses:
 
 1. Press your global shortcut (e.g. `Super+Alt+Space`) to start recording.
 2. Speak.
-3. Press the same shortcut again, or wait for the timer.
+3. Press the same shortcut again to stop recording.
 4. Vdora transcribes the audio locally and copies the text to your clipboard.
 5. Paste with `Ctrl+V` wherever your cursor is.
 
@@ -83,7 +83,7 @@ The best way to use Vdora is with a GNOME keyboard shortcut:
 1. Open **Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts**.
 2. Add a shortcut:
    - **Name:** Vdora
-   - **Command:** `vdora --oneshot --duration 30`
+   - **Command:** `vdora --oneshot`
    - **Shortcut:** `Super+Alt+Space` (or whatever you prefer)
 
 Now you can dictate from any app by pressing that shortcut once to start and again to stop.
@@ -95,13 +95,12 @@ Now you can dictate from any app by pressing that shortcut once to start and aga
 Triggered from anywhere via a global shortcut. No window needed. Perfect for quick dictation.
 
 ```bash
-vdora --oneshot --duration 30
+vdora --oneshot
 ```
 
 Aliases and options:
 
 ```bash
-vdora voice -d 60              # record up to 60 seconds
 vdora --oneshot --no-notify    # disable desktop notifications
 ```
 
