@@ -110,11 +110,28 @@ fn collect_segments(state: &whisper_rs::WhisperState) -> Result<String> {
 }
 
 fn normalize_transcript(input: &str) -> String {
-    input
-        .split_whitespace()
-        .filter(|token| !is_non_speech_marker(token))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut speech = String::with_capacity(input.len());
+    let mut remaining = input;
+
+    while let Some(start) = remaining.find('[') {
+        speech.push_str(&remaining[..start]);
+        let Some(relative_end) = remaining[start + 1..].find(']') else {
+            speech.push_str(&remaining[start..]);
+            remaining = "";
+            break;
+        };
+        let end = start + relative_end + 1;
+        let marker = &remaining[start..=end];
+        if is_non_speech_marker(marker) {
+            speech.push(' ');
+        } else {
+            speech.push_str(marker);
+        }
+        remaining = &remaining[end + 1..];
+    }
+    speech.push_str(remaining);
+
+    speech.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn is_non_speech_marker(token: &str) -> bool {
@@ -126,7 +143,17 @@ fn is_non_speech_marker(token: &str) -> bool {
         "[SILENCE]",
         "[INAUDIBLE]",
     ];
-    KNOWN_MARKERS.contains(&token)
+    let canonical = token
+        .trim()
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .map(str::trim)
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join("_"))
+        .map(|value| format!("[{}]", value.to_ascii_uppercase()));
+
+    canonical
+        .as_deref()
+        .is_some_and(|marker| KNOWN_MARKERS.contains(&marker))
 }
 
 #[cfg(test)]
@@ -161,6 +188,18 @@ mod tests {
     fn strips_non_speech_markers() {
         let cleaned = normalize_transcript("[BLANK_AUDIO] hello [MUSIC] world");
         assert_eq!(cleaned, "hello world");
+    }
+
+    #[test]
+    fn strips_spaced_case_insensitive_non_speech_markers() {
+        let cleaned = normalize_transcript("[ Silence ] hello [inaudible]");
+        assert_eq!(cleaned, "hello");
+    }
+
+    #[test]
+    fn preserves_bracketed_spoken_content() {
+        let cleaned = normalize_transcript("use [draft] for the filename");
+        assert_eq!(cleaned, "use [draft] for the filename");
     }
 
     #[test]
