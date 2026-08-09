@@ -78,12 +78,20 @@ impl RecordingSession {
     }
 
     pub fn stop(self) -> Result<RecordedAudio> {
+        self.request_stop();
+        self.finish()
+    }
+
+    pub fn request_stop(&self) {
+        signal_stop(&self.child);
+    }
+
+    pub fn finish(self) -> Result<RecordedAudio> {
         let RecordingSession {
             child,
             output_path,
             temp_path,
         } = self;
-        signal_stop(&child);
         finish_recording(child, output_path, temp_path)
     }
 

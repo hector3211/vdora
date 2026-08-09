@@ -1,4 +1,4 @@
-use std::{fs, path::Path, path::PathBuf};
+use std::{fs, path::Path, path::PathBuf, time::Instant};
 
 use anyhow::{Context, Result, anyhow};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -7,28 +7,32 @@ const REQUIRED_SAMPLE_RATE: u32 = 16_000;
 const MIN_AUDIO_SAMPLES: usize = 4_000;
 
 pub struct WhisperService {
-    model_path: PathBuf,
-    language: Option<String>,
+    context: WhisperContext,
 }
 
 impl WhisperService {
-    pub fn new(model_path: PathBuf, language: Option<String>) -> Self {
-        Self {
-            model_path,
-            language,
-        }
+    pub fn load(model_path: PathBuf) -> Result<Self> {
+        validate_model_path(&model_path)?;
+        let started_at = Instant::now();
+        let context = build_context(&model_path)?;
+        tracing::debug!(
+            "loaded Whisper model {} in {:.2?}",
+            model_path.display(),
+            started_at.elapsed()
+        );
+        Ok(Self { context })
     }
 
-    pub fn transcribe_file(&self, wav_path: &Path) -> Result<String> {
-        validate_model_path(&self.model_path)?;
+    pub fn transcribe_file(&self, wav_path: &Path, language: Option<&str>) -> Result<String> {
+        let started_at = Instant::now();
         let audio = load_wav_file(wav_path)?;
-        let context = build_context(&self.model_path)?;
-        let mut state = context
+        let mut state = self
+            .context
             .create_state()
             .context("failed to create whisper state")?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         configure_full_params(&mut params);
-        if let Some(language) = self.language.as_deref() {
+        if let Some(language) = language {
             params.set_language(Some(language));
         }
 
@@ -39,6 +43,11 @@ impl WhisperService {
         let transcript = collect_segments(&state)?;
 
         let cleaned = normalize_transcript(&transcript);
+        tracing::debug!(
+            "transcribed {} in {:.2?}",
+            wav_path.display(),
+            started_at.elapsed()
+        );
         Ok(cleaned)
     }
 }
@@ -72,7 +81,14 @@ fn configure_full_params(params: &mut FullParams<'_, '_>) {
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_translate(false);
-    params.set_n_threads(4);
+    let available_threads = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(4);
+    params.set_n_threads(transcription_thread_count(available_threads));
+}
+
+fn transcription_thread_count(available_threads: usize) -> i32 {
+    available_threads.clamp(1, 8) as i32
 }
 
 fn collect_segments(state: &whisper_rs::WhisperState) -> Result<String> {
@@ -115,7 +131,25 @@ fn is_non_speech_marker(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_transcript;
+    use super::{WhisperService, normalize_transcript, transcription_thread_count};
+
+    #[test]
+    fn transcription_threads_scale_without_oversubscribing_large_machines() {
+        assert_eq!(transcription_thread_count(1), 1);
+        assert_eq!(transcription_thread_count(4), 4);
+        assert_eq!(transcription_thread_count(16), 8);
+    }
+
+    #[test]
+    fn loading_service_rejects_a_missing_model_immediately() {
+        let missing = std::env::temp_dir().join("vdora-missing-whisper-model.bin");
+        let err = match WhisperService::load(missing) {
+            Ok(_) => panic!("loading should fail before transcription starts"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("missing model file"));
+    }
 
     #[test]
     fn normalizes_whitespace() {

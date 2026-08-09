@@ -30,7 +30,18 @@ enum AppMessage {
     },
 }
 
+struct TranscriptionRequest {
+    id: u64,
+    session: RecordingSession,
+    config: AppConfig,
+}
+
 pub fn build_ui(app: &adw::Application) {
+    if let Some(window) = app.windows().first() {
+        window.present();
+        return;
+    }
+
     let removed = cleanup_stale_recordings(STALE_RECORDING_MAX_AGE);
     if removed > 0 {
         tracing::info!("removed {removed} stale recording file(s) from temp directory");
@@ -181,6 +192,12 @@ pub fn build_ui(app: &adw::Application) {
     refresh_diagnostics();
 
     let (sender, receiver) = mpsc::channel::<AppMessage>();
+    let (transcription_sender, transcription_receiver) = mpsc::channel::<TranscriptionRequest>();
+    spawn_transcription_worker(
+        config.borrow().clone(),
+        transcription_receiver,
+        sender.clone(),
+    );
     let (tray_sender, tray_receiver) = mpsc::channel::<TrayEvent>();
     let tray_controller = match crate::tray::spawn(tray_sender) {
         Ok(controller) => Some(controller),
@@ -213,7 +230,7 @@ pub fn build_ui(app: &adw::Application) {
         let reporter = reporter.clone();
         let refresh_diagnostics = refresh_diagnostics.clone();
 
-        glib::timeout_add_local(Duration::from_millis(250), move || {
+        glib::timeout_add_local(Duration::from_millis(50), move || {
             if *state.borrow() == AppState::Recording {
                 if let Some(started_at) = *recording_started_at.borrow() {
                     let elapsed = started_at.elapsed().as_secs();
@@ -336,7 +353,7 @@ pub fn build_ui(app: &adw::Application) {
 
     let toggle_recording: Rc<dyn Fn()> = {
         let overlay = overlay.clone();
-        let sender = sender.clone();
+        let transcription_sender = transcription_sender.clone();
         let config = config.clone();
         let recorder = recorder.clone();
         let active_session = active_session.clone();
@@ -392,7 +409,6 @@ pub fn build_ui(app: &adw::Application) {
             *state.borrow_mut() = AppState::Transcribing;
             apply_app_state(AppState::Transcribing, &ui_state_targets);
 
-            let sender = sender.clone();
             let transcription_id = {
                 let mut next_id = next_transcription_id.borrow_mut();
                 let id = *next_id;
@@ -401,20 +417,26 @@ pub fn build_ui(app: &adw::Application) {
             };
             *current_transcription_id.borrow_mut() = Some(transcription_id);
             let config_snapshot = config.borrow().clone();
-            thread::spawn(move || {
-                let result = transcribe_session(session, config_snapshot)
-                    .map_err(|err| format!("Transcription failed: {err:#}"));
-
-                if sender
-                    .send(AppMessage::TranscriptionFinished {
-                        id: transcription_id,
-                        result,
-                    })
-                    .is_err()
-                {
-                    tracing::error!("failed to send transcription result to UI thread");
-                }
-            });
+            session.request_stop();
+            if let Err(err) = transcription_sender.send(TranscriptionRequest {
+                id: transcription_id,
+                session,
+                config: config_snapshot,
+            }) {
+                thread::spawn(move || {
+                    let _ = err.0.session.finish();
+                });
+                *current_transcription_id.borrow_mut() = None;
+                *state.borrow_mut() = AppState::Error;
+                apply_app_state(AppState::Error, &ui_state_targets);
+                add_error_with_diagnostics_refresh(
+                    &reporter,
+                    &overlay,
+                    &refresh_diagnostics,
+                    "transcription",
+                    "Transcription worker is unavailable",
+                );
+            }
         })
     };
 
@@ -1393,14 +1415,60 @@ fn apply_app_state(next_state: AppState, targets: &UiStateTargets) {
     }
 }
 
-fn transcribe_session(session: RecordingSession, config: AppConfig) -> Result<String> {
-    let recording = session.stop().context("failed to finish audio recording")?;
-    transcribe_file(recording.path(), &config)
+fn spawn_transcription_worker(
+    initial_config: AppConfig,
+    receiver: mpsc::Receiver<TranscriptionRequest>,
+    sender: mpsc::Sender<AppMessage>,
+) {
+    thread::spawn(move || {
+        let mut loaded = load_whisper(&initial_config)
+            .map_err(|err| tracing::debug!("Whisper preload deferred: {err:#}"))
+            .ok();
+
+        while let Ok(request) = receiver.recv() {
+            let result = transcribe_request(&request.config, request.session, &mut loaded)
+                .map_err(|err| format!("Transcription failed: {err:#}"));
+
+            if sender
+                .send(AppMessage::TranscriptionFinished {
+                    id: request.id,
+                    result,
+                })
+                .is_err()
+            {
+                tracing::error!("failed to send transcription result to UI thread");
+                break;
+            }
+        }
+    });
 }
 
-fn transcribe_file(wav_path: &std::path::Path, config: &AppConfig) -> Result<String> {
-    let whisper = WhisperService::new(config.model_path.clone(), config.language.clone());
-    whisper.transcribe_file(wav_path)
+fn transcribe_request(
+    config: &AppConfig,
+    session: RecordingSession,
+    loaded: &mut Option<(PathBuf, WhisperService)>,
+) -> Result<String> {
+    let recording = session
+        .finish()
+        .context("failed to finish audio recording")?;
+    let model_changed = loaded
+        .as_ref()
+        .is_none_or(|(model_path, _)| model_path != &config.model_path);
+    if model_changed {
+        loaded.take();
+        *loaded = Some(load_whisper(config)?);
+    }
+
+    loaded
+        .as_ref()
+        .expect("Whisper model should be loaded")
+        .1
+        .transcribe_file(recording.path(), config.language.as_deref())
+}
+
+fn load_whisper(config: &AppConfig) -> Result<(PathBuf, WhisperService)> {
+    let service = WhisperService::load(config.model_path.clone())?;
+    Ok((config.model_path.clone(), service))
 }
 
 #[cfg(test)]

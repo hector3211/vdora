@@ -93,13 +93,13 @@ pub fn print_help() {
 pub fn run(options: Options) -> Result<()> {
     let paths = Paths::new()?;
     let notifications = !options.no_notify;
-    handle_existing_run_or_exit(&paths, notifications)?;
+    let current_pid = std::process::id();
+    handle_existing_run_or_exit(&paths, notifications, current_pid)?;
 
     let config = AppConfig::load_or_default();
     ensure_model(&config.model_path)?;
 
     let recorder = Recorder::new();
-    let current_pid = std::process::id();
 
     eprintln!("Recording. Run vdora --oneshot again to stop.");
     notify(
@@ -118,6 +118,17 @@ pub fn run(options: Options) -> Result<()> {
         },
     )?;
 
+    // Model loading is hidden behind recording time instead of delaying the stop action.
+    let service = match WhisperService::load(config.model_path.clone()) {
+        Ok(service) => service,
+        Err(err) => {
+            let _ = session.stop();
+            let _ = cleanup_state(&paths, current_pid);
+            notify(&paths, notifications, "Unable to load Whisper model.");
+            return Err(err);
+        }
+    };
+
     let audio = session.wait()?;
 
     write_state(
@@ -131,8 +142,7 @@ pub fn run(options: Options) -> Result<()> {
     eprintln!("Transcribing...");
     notify(&paths, notifications, "Transcribing...");
 
-    let service = WhisperService::new(config.model_path.clone(), config.language.clone());
-    let transcript = service.transcribe_file(audio.path())?;
+    let transcript = service.transcribe_file(audio.path(), config.language.as_deref())?;
 
     if transcript.trim().is_empty() {
         cleanup_state(&paths, current_pid)?;
@@ -177,7 +187,7 @@ impl Paths {
     }
 }
 
-fn handle_existing_run_or_exit(paths: &Paths, notifications: bool) -> Result<()> {
+fn handle_existing_run_or_exit(paths: &Paths, notifications: bool, current_pid: u32) -> Result<()> {
     fs::create_dir_all(&paths.runtime_dir)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -213,6 +223,14 @@ fn handle_existing_run_or_exit(paths: &Paths, notifications: bool) -> Result<()>
     }
 
     let _ = fs::remove_file(&paths.state_file);
+    write_state(
+        paths,
+        &State {
+            parent_pid: Some(current_pid),
+            recorder_pid: None,
+            phase: Some("starting".to_string()),
+        },
+    )?;
     lock.unlock()?;
     Ok(())
 }
@@ -252,7 +270,7 @@ fn parse_pid(value: &str) -> Option<u32> {
 
 fn write_state(paths: &Paths, state: &State) -> Result<()> {
     fs::create_dir_all(&paths.runtime_dir)?;
-    let mut file = File::create(&paths.state_file)?;
+    let mut file = tempfile::NamedTempFile::new_in(&paths.runtime_dir)?;
     writeln!(file, "parent_pid={}", state.parent_pid.unwrap_or_default())?;
     writeln!(
         file,
@@ -260,6 +278,7 @@ fn write_state(paths: &Paths, state: &State) -> Result<()> {
         state.recorder_pid.unwrap_or_default()
     )?;
     writeln!(file, "phase={}", state.phase.as_deref().unwrap_or_default())?;
+    file.persist(&paths.state_file).map_err(|err| err.error)?;
     Ok(())
 }
 

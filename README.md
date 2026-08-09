@@ -166,6 +166,7 @@ sudo dnf install ydotool
 ## Tips
 
 - The default model (`ggml-base.en`) balances speed and accuracy well. Larger models are more accurate but slower.
+- Vdora preloads and reuses the model in GUI mode, and loads it while recording in one-shot mode, to minimize the delay after you stop speaking. Keeping the GUI open therefore uses additional memory roughly proportional to the selected model size.
 - On Wayland, `wl-copy` is used automatically when available for better clipboard reliability.
 - If auto-paste does not work, the transcript is still on your clipboard — just press `Ctrl+V`.
 - Tray icon visibility on GNOME may require an AppIndicator/KStatusNotifier extension.
