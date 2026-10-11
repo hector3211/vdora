@@ -66,7 +66,7 @@ cp /path/to/ggml-base.en.bin ~/.local/share/vdora/models/
 
 ### 2. Optional: enable auto-paste
 
-By default, Vdora copies the transcript to the clipboard and you paste manually. If you install `ydotool`, Vdora can also simulate `Ctrl+V` automatically:
+By default, Vdora copies the transcript to the clipboard and you paste manually. If you install `ydotool`, Vdora can also send a paste shortcut automatically:
 
 ```bash
 # Fedora
@@ -76,7 +76,14 @@ sudo dnf install ydotool
 sudo apt install ydotool
 ```
 
-Enable it in the GUI Settings tab or in your config file.
+Enable **Auto-paste** in the GUI Settings tab and choose **Paste mode**:
+
+- **Standard** sends `Ctrl+V` for browsers, editors, and other desktop apps.
+- **Terminal** sends `Ctrl+Shift+V` for WezTerm and other terminals, without changing their keybindings.
+
+Click **Save Settings**. The selection applies to GUI paste actions and `vdora --oneshot`. Existing configurations default to Standard. Alternatively, set `paste_mode = "terminal"` (or `"standard"`) in `~/.config/vdora/config.toml`.
+
+`ydotoold` must be running with a socket your user can access; installing `ydotool` alone is insufficient. Vdora respects `YDOTOOL_SOCKET` when set; otherwise it selects an existing socket at `$XDG_RUNTIME_DIR/.ydotool_socket`, then `/tmp/.ydotool_socket`. This handles Fedora clients and system daemons using different default locations. Do not make the socket world-writable. Automatic per-application selection is not implemented yet, so select the mode appropriate for your target app.
 
 ### 3. Recommended: global shortcut for one-shot mode
 
@@ -117,7 +124,7 @@ vdora
 The GUI gives you:
 
 - A big record button with live elapsed time
-- Settings (language, model path, auto-paste, hotkey)
+- Settings (language, model path, auto-paste mode, hotkey)
 - Diagnostics to verify dependencies
 - System tray integration
 - Native libadwaita header bar, bottom navigation on narrow windows, and adaptive settings rows

@@ -136,6 +136,7 @@ pub fn diagnostics_bundle(
         format!("model_path: {}", config.model_path.display()),
         format!("language: {}", config.language.as_deref().unwrap_or("auto")),
         format!("autopaste_enabled: {}", config.autopaste),
+        format!("paste_shortcut: {}", config.paste_mode.shortcut_label()),
         format!("hotkey: {}", config.hotkey),
         format!("log_level: {}", config.log_level.as_ui_label()),
         format!("pw_record_available: {}", health.pw_record_available),

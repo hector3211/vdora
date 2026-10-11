@@ -12,10 +12,28 @@ const APP_NAME: &str = "vdora";
 #[serde(default)]
 pub struct AppConfig {
     pub autopaste: bool,
+    pub paste_mode: PasteMode,
     pub language: Option<String>,
     pub model_path: PathBuf,
     pub hotkey: String,
     pub log_level: LogLevel,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PasteMode {
+    #[default]
+    Standard,
+    Terminal,
+}
+
+impl PasteMode {
+    pub fn shortcut_label(self) -> &'static str {
+        match self {
+            Self::Standard => "Ctrl+V",
+            Self::Terminal => "Ctrl+Shift+V",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +70,7 @@ impl Default for AppConfig {
         let model_path = default_model_path();
         Self {
             autopaste: false,
+            paste_mode: PasteMode::default(),
             language: None,
             model_path,
             hotkey: crate::hotkey::default_hotkey().to_string(),
@@ -127,12 +146,13 @@ fn config_file_path() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, LogLevel};
+    use super::{AppConfig, LogLevel, PasteMode};
 
     #[test]
     fn config_round_trips_with_quoted_model_path() {
         let config = AppConfig {
             autopaste: true,
+            paste_mode: PasteMode::Terminal,
             language: Some("es".into()),
             model_path: std::path::PathBuf::from("/tmp/a \"quoted\" model.bin"),
             hotkey: "<Ctrl><Alt>space".into(),
@@ -141,6 +161,7 @@ mod tests {
         let raw = toml::to_string_pretty(&config).unwrap();
         let parsed: AppConfig = toml::from_str(&raw).unwrap();
         assert_eq!(parsed.autopaste, config.autopaste);
+        assert_eq!(parsed.paste_mode, config.paste_mode);
         assert_eq!(parsed.language, config.language);
         assert_eq!(parsed.model_path, config.model_path);
         assert_eq!(parsed.hotkey, config.hotkey);
@@ -163,7 +184,13 @@ model_path = "/tmp/model.bin"
 "#;
         let parsed: AppConfig = toml::from_str(raw).expect("config should parse");
         assert!(!parsed.hotkey.trim().is_empty());
+        assert_eq!(parsed.paste_mode, PasteMode::Standard);
         assert_eq!(parsed.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn unknown_paste_modes_are_rejected() {
+        assert!(toml::from_str::<AppConfig>("paste_mode = 'automatic'").is_err());
     }
 
     #[test]

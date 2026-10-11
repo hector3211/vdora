@@ -156,7 +156,7 @@ pub fn run(options: Options) -> Result<()> {
     clipboard::set_text(&transcript).context("failed to copy transcript to clipboard")?;
 
     if config.autopaste {
-        if let Err(err) = paste::trigger_ctrl_v() {
+        if let Err(err) = paste::trigger(config.paste_mode) {
             tracing::warn!("auto-paste failed after clipboard copy: {err}");
             notify(
                 &paths,
@@ -170,7 +170,10 @@ pub fn run(options: Options) -> Result<()> {
         notify(&paths, notifications, "Transcript copied to clipboard.");
     }
 
-    eprintln!("Transcript copied to clipboard. Paste it into opencode with Ctrl+V.");
+    eprintln!(
+        "Transcript copied to clipboard. Manual paste shortcut: {}.",
+        config.paste_mode.shortcut_label()
+    );
     cleanup_state(&paths, current_pid)?;
     Ok(())
 }

@@ -13,7 +13,7 @@ use gtk::{Orientation, gdk, gio, glib};
 
 use crate::{
     audio::recorder::{Recorder, RecordingSession, cleanup_stale_recordings},
-    config::{AppConfig, LogLevel},
+    config::{AppConfig, LogLevel, PasteMode},
     diagnostics, hotkey,
     insert::{clipboard, paste},
     state::AppState,
@@ -154,6 +154,7 @@ pub fn build_ui(app: &adw::Application) {
 
     let SettingsWidgets {
         settings_autopaste_switch,
+        paste_mode_row,
         model_entry,
         language_entry,
         hotkey_entry,
@@ -248,6 +249,7 @@ pub fn build_ui(app: &adw::Application) {
         let overlay = overlay.clone();
         let transcript_buffer = transcript_buffer.clone();
         let settings_autopaste_switch = settings_autopaste_switch.clone();
+        let config = config.clone();
         let window = window.clone();
         let app = app.clone();
         let ui_state_targets = ui_state_targets.clone();
@@ -327,7 +329,7 @@ pub fn build_ui(app: &adw::Application) {
                                     );
                                 } else if settings_autopaste_switch.is_active() {
                                     if window.is_active() {
-                                        match paste::trigger_ctrl_v() {
+                                        match paste::trigger(config.borrow().paste_mode) {
                                             Ok(()) => add_toast(&overlay, "Transcribed and pasted"),
                                             Err(err) => {
                                                 add_error_with_diagnostics_refresh(
@@ -522,6 +524,7 @@ pub fn build_ui(app: &adw::Application) {
         let recorder_hint = recorder_hint.clone();
         let settings_autopaste_switch = settings_autopaste_switch.clone();
         let log_level_dropdown = log_level_dropdown.clone();
+        let paste_mode_row = paste_mode_row.clone();
         let model_entry = model_entry.clone();
         let language_entry = language_entry.clone();
         let hotkey_entry = hotkey_entry.clone();
@@ -584,8 +587,20 @@ pub fn build_ui(app: &adw::Application) {
                 }
             };
 
+            let Some(selected_paste_mode) = parse_paste_mode_selection(paste_mode_row.selected())
+            else {
+                add_error_with_diagnostics_refresh(
+                    &reporter,
+                    &overlay,
+                    &refresh_diagnostics,
+                    "settings",
+                    "Invalid paste mode. Choose Standard or Terminal.",
+                );
+                return;
+            };
             let mut next_cfg = next_cfg;
             next_cfg.log_level = selected_log_level;
+            next_cfg.paste_mode = selected_paste_mode;
 
             if let Err(err) = next_cfg.save() {
                 add_error_with_diagnostics_refresh(
@@ -611,6 +626,7 @@ pub fn build_ui(app: &adw::Application) {
             hotkey_label.set_label(&format_hotkey_line(&config.borrow()));
             recorder_hint.set_label(&format_hotkey_tip(&config.borrow()));
             settings_autopaste_switch.set_active(config.borrow().autopaste);
+            paste_mode_row.set_selected(paste_mode_to_index(config.borrow().paste_mode));
             log_level_dropdown.set_selected(log_level_to_index(config.borrow().log_level));
 
             add_toast(&overlay, "Settings saved");
@@ -719,6 +735,7 @@ pub fn build_ui(app: &adw::Application) {
         let transcript_buffer = transcript_buffer.clone();
         let reporter = reporter.clone();
         let refresh_diagnostics = refresh_diagnostics.clone();
+        let config = config.clone();
         paste_button.connect_clicked(move |_| {
             let Some(text) = current_transcript_text(&transcript_buffer) else {
                 add_toast(&overlay, "Nothing to paste yet");
@@ -736,7 +753,7 @@ pub fn build_ui(app: &adw::Application) {
                 return;
             }
 
-            match paste::trigger_ctrl_v() {
+            match paste::trigger(config.borrow().paste_mode) {
                 Ok(()) => add_toast(&overlay, "Pasted transcript"),
                 Err(err) => {
                     add_error_with_diagnostics_refresh(
@@ -859,6 +876,7 @@ struct RecorderWidgets {
 
 struct SettingsWidgets {
     settings_autopaste_switch: gtk::Switch,
+    paste_mode_row: adw::ComboRow,
     model_entry: adw::EntryRow,
     language_entry: adw::EntryRow,
     hotkey_entry: adw::EntryRow,
@@ -1088,7 +1106,7 @@ fn build_settings_page(
 
     let settings_autopaste_row = adw::ActionRow::builder()
         .title("Auto-paste")
-        .subtitle("Automatically press Ctrl+V after transcription (optional: ydotool).")
+        .subtitle("Paste after transcription using the selected shortcut (requires ydotool).")
         .build();
     let settings_autopaste_switch = gtk::Switch::builder()
         .active(config.autopaste)
@@ -1098,6 +1116,15 @@ fn build_settings_page(
     settings_autopaste_row.add_suffix(&settings_autopaste_switch);
     settings_autopaste_row.set_activatable_widget(Some(&settings_autopaste_switch));
     settings_general_group.add(&settings_autopaste_row);
+
+    let paste_modes = gtk::StringList::new(&["Standard — Ctrl+V", "Terminal — Ctrl+Shift+V"]);
+    let paste_mode_row = adw::ComboRow::builder()
+        .title("Paste mode")
+        .subtitle("Choose Terminal for WezTerm and other terminals. Applies to one-shot mode too.")
+        .model(&paste_modes)
+        .selected(paste_mode_to_index(config.paste_mode))
+        .build();
+    settings_general_group.add(&paste_mode_row);
 
     let model_entry = adw::EntryRow::builder()
         .title("Whisper model path")
@@ -1150,6 +1177,7 @@ fn build_settings_page(
         settings_page,
         SettingsWidgets {
             settings_autopaste_switch,
+            paste_mode_row,
             model_entry,
             language_entry,
             hotkey_entry,
@@ -1260,6 +1288,21 @@ fn build_diagnostics_page() -> (gtk::Box, DiagnosticsWidgets) {
             refresh_diagnostics_button,
         },
     )
+}
+
+fn parse_paste_mode_selection(index: u32) -> Option<PasteMode> {
+    match index {
+        0 => Some(PasteMode::Standard),
+        1 => Some(PasteMode::Terminal),
+        _ => None,
+    }
+}
+
+fn paste_mode_to_index(mode: PasteMode) -> u32 {
+    match mode {
+        PasteMode::Standard => 0,
+        PasteMode::Terminal => 1,
+    }
 }
 
 fn build_next_config(
@@ -1507,10 +1550,11 @@ fn load_whisper(config: &AppConfig) -> Result<(PathBuf, WhisperService)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_next_config, can_toggle_recording, parse_log_level_selection, should_hide_on_close,
+        build_next_config, can_toggle_recording, parse_log_level_selection,
+        parse_paste_mode_selection, paste_mode_to_index, should_hide_on_close,
         should_ignore_transcription_result, should_start_hidden, transcript_is_empty,
     };
-    use crate::config::{AppConfig, LogLevel};
+    use crate::config::{AppConfig, LogLevel, PasteMode};
     use crate::state::AppState;
     use tempfile::NamedTempFile;
 
@@ -1588,6 +1632,18 @@ mod tests {
             .expect("next config should build");
 
         assert_eq!(next.log_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn paste_mode_selection_round_trips_and_rejects_invalid_indices() {
+        for mode in [PasteMode::Standard, PasteMode::Terminal] {
+            assert_eq!(
+                parse_paste_mode_selection(paste_mode_to_index(mode)),
+                Some(mode)
+            );
+        }
+        assert_eq!(parse_paste_mode_selection(2), None);
+        assert_eq!(parse_paste_mode_selection(u32::MAX), None);
     }
 
     #[test]
