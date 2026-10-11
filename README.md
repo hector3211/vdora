@@ -55,12 +55,14 @@ Vdora needs a Whisper model. By default it expects:
 ~/.local/share/vdora/models/ggml-base.en.bin
 ```
 
-If the model is missing, Vdora downloads `ggml-base.en.bin` automatically on first use. You can also place your own model there:
+In one-shot mode, Vdora downloads a missing `ggml-base.en.bin` automatically on first use. For GUI mode, install a model first. You can also place your own model there:
 
 ```bash
 mkdir -p ~/.local/share/vdora/models
 cp /path/to/ggml-base.en.bin ~/.local/share/vdora/models/
 ```
+
+**About S1-mini:** [Superwhisper S1-mini](https://huggingface.co/superwhisper/s1-mini) is a text-cleanup model, not an audio transcription model. It cannot be loaded as a Whisper `.bin` file. S1-mini integration would require a separate local inference stage after Whisper; that stage is not implemented yet.
 
 ### 2. Optional: enable auto-paste
 
@@ -118,6 +120,8 @@ The GUI gives you:
 - Settings (language, model path, auto-paste, hotkey)
 - Diagnostics to verify dependencies
 - System tray integration
+- Native libadwaita header bar, bottom navigation on narrow windows, and adaptive settings rows
+- System light/dark and high-contrast styling without a custom theme
 
 ## Example: dictating into opencode
 
@@ -135,7 +139,7 @@ For long prompts, paste into opencode's editor with `/editor` or `Ctrl+X` then `
 Required:
 
 - `pw-record` (PipeWire tools)
-- GTK4 + libadwaita runtime libraries
+- GTK 4.12+ and libadwaita 1.4+ runtime libraries
 
 Optional:
 
@@ -166,7 +170,7 @@ sudo dnf install ydotool
 ## Tips
 
 - The default model (`ggml-base.en`) balances speed and accuracy well. Larger models are more accurate but slower.
-- Vdora preloads and reuses the model in GUI mode, and loads it while recording in one-shot mode, to minimize the delay after you stop speaking. Keeping the GUI open therefore uses additional memory roughly proportional to the selected model size.
+- Vdora preloads and reuses the model and inference state in GUI mode, and loads them while recording in one-shot mode, to avoid repeated allocation after you stop speaking. Keeping the GUI open therefore uses additional memory roughly proportional to the selected model size. Each recording is decoded without carrying over previous dictation context.
 - On Wayland, `wl-copy` is used automatically when available for better clipboard reliability.
 - If auto-paste does not work, the transcript is still on your clipboard — just press `Ctrl+V`.
 - If Vdora reports "No speech detected," verify the intended microphone is selected as the system's default input and try again closer to the microphone.

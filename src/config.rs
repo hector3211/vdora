@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -93,8 +93,17 @@ impl AppConfig {
         }
 
         let raw = toml::to_string_pretty(self).context("failed to serialize config")?;
-        fs::write(&path, raw)
-            .with_context(|| format!("failed to write config file at {}", path.display()))?;
+        let parent = path
+            .parent()
+            .context("config path has no parent directory")?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temporary config file")?;
+        file.write_all(raw.as_bytes())
+            .context("failed to write config")?;
+        file.as_file().sync_all().context("failed to sync config")?;
+        file.persist(&path)
+            .map_err(|err| err.error)
+            .with_context(|| format!("failed to replace config file at {}", path.display()))?;
 
         Ok(())
     }

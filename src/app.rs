@@ -68,40 +68,69 @@ pub fn build_ui(app: &adw::Application) {
         .application(app)
         .title("Vdora")
         .default_width(620)
-        .default_height(520)
+        .default_height(720)
+        .width_request(320)
+        .height_request(360)
         .build();
 
     let overlay = adw::ToastOverlay::new();
     window.set_content(Some(&overlay));
 
-    let root = gtk::Box::builder()
-        .orientation(Orientation::Vertical)
-        .spacing(12)
-        .margin_top(16)
-        .margin_bottom(16)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
-
     let stack = adw::ViewStack::new();
     stack.set_vexpand(true);
-    let switcher = adw::ViewSwitcher::new();
-    switcher.set_stack(Some(&stack));
-    switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
-    root.append(&switcher);
-    root.append(&stack);
-    overlay.set_child(Some(&root));
+    let switcher = adw::ViewSwitcher::builder()
+        .stack(&stack)
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    let header = adw::HeaderBar::builder().title_widget(&switcher).build();
+    let switcher_bar = adw::ViewSwitcherBar::builder().stack(&stack).build();
+    let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+        adw::BreakpointConditionLengthType::MaxWidth,
+        550.0,
+        adw::LengthUnit::Sp,
+    ));
+    narrow.add_setter(&header, "title-widget", None);
+    narrow.add_setter(&switcher_bar, "reveal", Some(&true.to_value()));
+    window.add_breakpoint(narrow);
+
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&header);
+    toolbar_view.add_bottom_bar(&switcher_bar);
+    toolbar_view.set_content(Some(&stack));
+    overlay.set_child(Some(&toolbar_view));
 
     let (recorder_page, recorder_widgets) =
         build_recorder_page(&config.borrow(), autopaste_available);
-    stack.add_titled(&recorder_page, Some("recorder"), "Recorder");
+    let recorder_clamp = adw::Clamp::builder()
+        .maximum_size(720)
+        .child(&recorder_page)
+        .build();
+    let recorder_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&recorder_clamp)
+        .build();
+    stack
+        .add_titled(&recorder_scroll, Some("recorder"), "Recorder")
+        .set_icon_name(Some("audio-input-microphone-symbolic"));
 
     let (settings_page, settings_widgets) =
         build_settings_page(&config.borrow(), autopaste_available);
-    stack.add_titled(&settings_page, Some("settings"), "Settings");
+    stack
+        .add_titled(&settings_page, Some("settings"), "Settings")
+        .set_icon_name(Some("preferences-system-symbolic"));
 
     let (diagnostics_page, diagnostics_widgets) = build_diagnostics_page();
-    stack.add_titled(&diagnostics_page, Some("diagnostics"), "Diagnostics");
+    let diagnostics_clamp = adw::Clamp::builder()
+        .maximum_size(720)
+        .child(&diagnostics_page)
+        .build();
+    let diagnostics_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&diagnostics_clamp)
+        .build();
+    stack
+        .add_titled(&diagnostics_scroll, Some("diagnostics"), "Diagnostics")
+        .set_icon_name(Some("utilities-system-monitor-symbolic"));
 
     let RecorderWidgets {
         status_spinner,
@@ -236,9 +265,12 @@ pub fn build_ui(app: &adw::Application) {
                     let elapsed = started_at.elapsed().as_secs();
                     let minutes = elapsed / 60;
                     let seconds = elapsed % 60;
-                    elapsed_label.set_label(&format!("Recording: {minutes:02}:{seconds:02}"));
+                    let label = format!("Recording: {minutes:02}:{seconds:02}");
+                    if elapsed_label.label().as_str() != label {
+                        elapsed_label.set_label(&label);
+                    }
                 }
-            } else {
+            } else if !elapsed_label.label().is_empty() {
                 elapsed_label.set_label("");
             }
 
@@ -827,9 +859,9 @@ struct RecorderWidgets {
 
 struct SettingsWidgets {
     settings_autopaste_switch: gtk::Switch,
-    model_entry: gtk::Entry,
-    language_entry: gtk::Entry,
-    hotkey_entry: gtk::Entry,
+    model_entry: adw::EntryRow,
+    language_entry: adw::EntryRow,
+    hotkey_entry: adw::EntryRow,
     log_level_dropdown: gtk::DropDown,
     save_button: gtk::Button,
     test_checks_button: gtk::Button,
@@ -940,6 +972,7 @@ fn build_recorder_page(
         .css_classes(["dim-label"])
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .build();
     recorder_page.append(&model_label);
 
@@ -961,11 +994,16 @@ fn build_recorder_page(
         .label("Your latest transcript appears here.")
         .css_classes(["dim-label"])
         .xalign(0.0)
+        .wrap(true)
         .build();
     recorder_page.append(&transcript_hint);
 
     let transcript_view = gtk::TextView::builder()
         .editable(false)
+        .left_margin(12)
+        .right_margin(12)
+        .top_margin(12)
+        .bottom_margin(12)
         .wrap_mode(gtk::WrapMode::WordChar)
         .vexpand(true)
         .build();
@@ -977,6 +1015,7 @@ fn build_recorder_page(
         .min_content_height(180)
         .child(&transcript_view)
         .build();
+    transcript_scroll.add_css_class("card");
     recorder_page.append(&transcript_scroll);
 
     let transcript_actions_row = gtk::Box::builder()
@@ -995,8 +1034,8 @@ fn build_recorder_page(
     error_revealer.set_reveal_child(false);
     error_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
     let error_box = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(8)
+        .orientation(Orientation::Vertical)
+        .spacing(12)
         .build();
     error_box.add_css_class("card");
     let error_label = gtk::Label::builder()
@@ -1057,46 +1096,26 @@ fn build_settings_page(
         .build();
     settings_autopaste_switch.set_sensitive(autopaste_available);
     settings_autopaste_row.add_suffix(&settings_autopaste_switch);
+    settings_autopaste_row.set_activatable_widget(Some(&settings_autopaste_switch));
     settings_general_group.add(&settings_autopaste_row);
 
-    let model_entry = gtk::Entry::builder()
-        .hexpand(true)
+    let model_entry = adw::EntryRow::builder()
+        .title("Whisper model path")
         .text(config.model_path.display().to_string())
-        .placeholder_text("/home/user/.local/share/vdora/models/ggml-base.en.bin")
         .build();
-    model_entry.set_width_chars(36);
-    let model_row = adw::ActionRow::builder()
-        .title("Model path")
-        .subtitle("Local Whisper model file path")
-        .build();
-    model_row.add_suffix(&model_entry);
-    settings_general_group.add(&model_row);
+    settings_general_group.add(&model_entry);
 
-    let language_entry = gtk::Entry::builder()
-        .hexpand(true)
+    let language_entry = adw::EntryRow::builder()
+        .title("Language (blank to detect automatically)")
         .text(config.language.clone().unwrap_or_default())
-        .placeholder_text("auto (blank), en, es, ...")
         .build();
-    language_entry.set_width_chars(16);
-    let language_row = adw::ActionRow::builder()
-        .title("Language")
-        .subtitle("Leave blank for auto-detect")
-        .build();
-    language_row.add_suffix(&language_entry);
-    settings_general_group.add(&language_row);
+    settings_general_group.add(&language_entry);
 
-    let hotkey_entry = gtk::Entry::builder()
-        .hexpand(true)
+    let hotkey_entry = adw::EntryRow::builder()
+        .title("Record shortcut (for example, Ctrl+Alt+Space)")
         .text(config.hotkey.clone())
-        .placeholder_text("Ctrl+Alt+Space or <Ctrl><Alt>space")
         .build();
-    hotkey_entry.set_width_chars(20);
-    let hotkey_row = adw::ActionRow::builder()
-        .title("Record toggle hotkey")
-        .subtitle("App-level shortcut; global behavior depends on session")
-        .build();
-    hotkey_row.add_suffix(&hotkey_entry);
-    settings_general_group.add(&hotkey_row);
+    settings_general_group.add(&hotkey_entry);
 
     let log_level_options = gtk::StringList::new(&["info", "debug"]);
     let log_level_dropdown = gtk::DropDown::builder().model(&log_level_options).build();
@@ -1171,6 +1190,15 @@ fn build_diagnostics_page() -> (gtk::Box, DiagnosticsWidgets) {
     let health_ydotool_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
     let health_model_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
     let health_session_label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+    for label in [
+        &health_pw_record_label,
+        &health_wl_copy_label,
+        &health_ydotool_label,
+        &health_model_label,
+        &health_session_label,
+    ] {
+        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    }
 
     diagnostics_page.append(&health_session_label);
     diagnostics_page.append(&health_pw_record_label);
@@ -1186,6 +1214,10 @@ fn build_diagnostics_page() -> (gtk::Box, DiagnosticsWidgets) {
 
     let last_error_view = gtk::TextView::builder()
         .editable(false)
+        .left_margin(12)
+        .right_margin(12)
+        .top_margin(12)
+        .bottom_margin(12)
         .cursor_visible(false)
         .wrap_mode(gtk::WrapMode::WordChar)
         .vexpand(true)
@@ -1199,10 +1231,11 @@ fn build_diagnostics_page() -> (gtk::Box, DiagnosticsWidgets) {
         .min_content_height(150)
         .child(&last_error_view)
         .build();
+    last_error_scroll.add_css_class("card");
     diagnostics_page.append(&last_error_scroll);
 
     let diagnostics_actions_row = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
+        .orientation(Orientation::Vertical)
         .spacing(8)
         .build();
     let copy_diagnostics_button = gtk::Button::with_label("Copy Diagnostics");
@@ -1460,8 +1493,8 @@ fn transcribe_request(
     }
 
     loaded
-        .as_ref()
-        .expect("Whisper model should be loaded")
+        .as_mut()
+        .ok_or_else(|| anyhow!("Whisper model is not loaded"))?
         .1
         .transcribe_file(recording.path(), config.language.as_deref())
 }

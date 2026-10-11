@@ -95,6 +95,10 @@ pub fn run(options: Options) -> Result<()> {
     let notifications = !options.no_notify;
     let current_pid = std::process::id();
     handle_existing_run_or_exit(&paths, notifications, current_pid)?;
+    let _state_cleanup = StateCleanup {
+        paths: &paths,
+        current_pid,
+    };
 
     let config = AppConfig::load_or_default();
     ensure_model(&config.model_path)?;
@@ -119,7 +123,7 @@ pub fn run(options: Options) -> Result<()> {
     )?;
 
     // Model loading is hidden behind recording time instead of delaying the stop action.
-    let service = match WhisperService::load(config.model_path.clone()) {
+    let mut service = match WhisperService::load(config.model_path.clone()) {
         Ok(service) => service,
         Err(err) => {
             let _ = session.stop();
@@ -290,6 +294,21 @@ fn cleanup_state(paths: &Paths, current_pid: u32) -> Result<()> {
     Ok(())
 }
 
+// Clear the active-run marker on every exit path, including recording,
+// transcription, download, and clipboard failures.
+struct StateCleanup<'a> {
+    paths: &'a Paths,
+    current_pid: u32,
+}
+
+impl Drop for StateCleanup<'_> {
+    fn drop(&mut self) {
+        if let Err(err) = cleanup_state(self.paths, self.current_pid) {
+            tracing::warn!("failed to clean up oneshot state: {err:#}");
+        }
+    }
+}
+
 fn notify(paths: &Paths, enabled: bool, message: &str) {
     if !enabled || which::which("notify-send").is_err() {
         return;
@@ -326,7 +345,7 @@ fn notify(paths: &Paths, enabled: bool, message: &str) {
 
 fn ensure_model(model_path: &Path) -> Result<()> {
     if model_path.exists() {
-        return Ok(());
+        return crate::stt::whisper::validate_model_path(model_path);
     }
 
     let Some(file_name) = model_path.file_name().and_then(|name| name.to_str()) else {
@@ -352,9 +371,86 @@ fn ensure_model(model_path: &Path) -> Result<()> {
         .call()
         .context("failed to download default Whisper model")?;
     let mut reader = response.into_body().into_reader();
-    let tmp_path = model_path.with_extension("bin.tmp");
-    let mut out = File::create(&tmp_path)?;
-    std::io::copy(&mut reader, &mut out)?;
-    fs::rename(&tmp_path, model_path)?;
+    // Unique, same-directory temporary files prevent concurrent downloads from
+    // sharing a partial model; failed downloads are removed automatically.
+    let parent = model_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut out = tempfile::NamedTempFile::new_in(parent)?;
+    let bytes = std::io::copy(&mut reader, &mut out)?;
+    if bytes == 0 {
+        return Err(anyhow!("downloaded model is empty"));
+    }
+    out.as_file().sync_all()?;
+    out.persist(model_path).map_err(|err| err.error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Paths, State, StateCleanup, ensure_model, read_state, write_state};
+
+    fn paths(dir: &std::path::Path) -> Paths {
+        Paths {
+            runtime_dir: dir.to_path_buf(),
+            state_file: dir.join("state"),
+            lock_file: dir.join("lock"),
+            notification_id_file: dir.join("notification-id"),
+        }
+    }
+
+    #[test]
+    fn state_is_cleaned_on_error_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_state(
+            &paths,
+            &State {
+                parent_pid: Some(123),
+                phase: Some("transcribing".into()),
+                ..State::default()
+            },
+        )
+        .unwrap();
+        let fail = || -> anyhow::Result<()> {
+            let _cleanup = StateCleanup {
+                paths: &paths,
+                current_pid: 123,
+            };
+            Err(anyhow::anyhow!("transcription failed"))
+        };
+        assert!(fail().is_err());
+        assert!(!paths.state_file.exists());
+    }
+
+    #[test]
+    fn cleanup_does_not_remove_another_runs_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_state(
+            &paths,
+            &State {
+                parent_pid: Some(456),
+                ..State::default()
+            },
+        )
+        .unwrap();
+        drop(StateCleanup {
+            paths: &paths,
+            current_pid: 123,
+        });
+        assert_eq!(read_state(&paths).unwrap().parent_pid, Some(456));
+    }
+
+    #[test]
+    fn existing_model_directory_is_rejected_without_download() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            ensure_model(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("regular file")
+        );
+    }
 }
