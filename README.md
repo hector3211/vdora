@@ -37,7 +37,7 @@ Download the latest release from [github.com/hector3211/vdora/releases](https://
 
 ### Build from source
 
-Requires Rust and native build dependencies. See [Build dependencies](#build-dependencies) below.
+Requires Rust 1.92 or newer and native build dependencies. See [Build dependencies](#build-dependencies) below.
 
 ```bash
 git clone https://github.com/hector3211/vdora.git
@@ -150,7 +150,7 @@ Optional:
 
 To build from source you need:
 
-- Rust toolchain
+- Rust 1.92+ toolchain
 - `cmake`, `clang`/`gcc`
 - `libclang` development package (for bindgen)
 - GTK4 + libadwaita development packages
@@ -158,7 +158,7 @@ To build from source you need:
 Fedora example:
 
 ```bash
-sudo dnf install clang clang-devel cmake gcc-c++ glib2-devel gtk4-devel libadwaita-devel dbus-devel pipewire-utils
+sudo dnf install clang clang-devel cmake gcc-c++ glib2-devel gtk4-devel libadwaita-devel pipewire-utils
 ```
 
 Optional auto-paste support:

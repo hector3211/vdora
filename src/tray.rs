@@ -2,8 +2,8 @@ use std::sync::mpsc::Sender;
 use std::{env, path::PathBuf};
 
 use anyhow::Result;
-use ksni::ToolTip;
 use ksni::menu::StandardItem;
+use ksni::{ToolTip, blocking::TrayMethods};
 
 const MENU_SHOW_WINDOW: &str = "Show Window";
 const MENU_HIDE_WINDOW: &str = "Hide Window";
@@ -18,7 +18,7 @@ pub enum TrayEvent {
 
 #[derive(Clone)]
 pub struct TrayController {
-    handle: ksni::Handle<VdoraTray>,
+    handle: ksni::blocking::Handle<VdoraTray>,
 }
 
 impl TrayController {
@@ -38,9 +38,7 @@ pub fn spawn(sender: Sender<TrayEvent>) -> Result<TrayController> {
         icon_name: base_icon_name.clone(),
         base_icon_name,
     };
-    let service = ksni::TrayService::new(tray);
-    let handle = service.handle();
-    service.spawn();
+    let handle = tray.spawn()?;
     Ok(TrayController { handle })
 }
 
@@ -157,6 +155,13 @@ fn icon_name_for_status(base_icon_name: &str, status: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{MENU_HIDE_WINDOW, MENU_QUIT, MENU_SHOW_WINDOW, icon_name_for_status};
+
+    #[test]
+    #[ignore = "run under dbus-run-session with no StatusNotifierWatcher"]
+    fn spawn_reports_missing_tray_support() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        assert!(super::spawn(sender).is_err());
+    }
 
     #[test]
     fn tray_menu_labels_do_not_expose_record_toggle() {

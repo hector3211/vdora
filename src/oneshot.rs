@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use fs2::FileExt;
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
@@ -199,7 +198,7 @@ fn handle_existing_run_or_exit(paths: &Paths, notifications: bool, current_pid: 
         .read(true)
         .write(true)
         .open(&paths.lock_file)?;
-    lock.lock_exclusive()?;
+    lock.lock()?;
 
     let state = read_state(paths)?;
     if let Some(parent_pid) = state.parent_pid {
@@ -398,6 +397,21 @@ mod tests {
             lock_file: dir.join("lock"),
             notification_id_file: dir.join("notification-id"),
         }
+    }
+
+    #[test]
+    fn file_lock_excludes_other_handles_until_unlocked() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let first = file.reopen().unwrap();
+        let second = file.reopen().unwrap();
+        first.lock().unwrap();
+        assert!(matches!(
+            second.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        first.unlock().unwrap();
+        second.try_lock().unwrap();
+        second.unlock().unwrap();
     }
 
     #[test]

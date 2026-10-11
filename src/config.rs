@@ -130,6 +130,24 @@ mod tests {
     use super::{AppConfig, LogLevel};
 
     #[test]
+    fn config_round_trips_with_quoted_model_path() {
+        let config = AppConfig {
+            autopaste: true,
+            language: Some("es".into()),
+            model_path: std::path::PathBuf::from("/tmp/a \"quoted\" model.bin"),
+            hotkey: "<Ctrl><Alt>space".into(),
+            log_level: LogLevel::Debug,
+        };
+        let raw = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed.autopaste, config.autopaste);
+        assert_eq!(parsed.language, config.language);
+        assert_eq!(parsed.model_path, config.model_path);
+        assert_eq!(parsed.hotkey, config.hotkey);
+        assert_eq!(parsed.log_level, config.log_level);
+    }
+
+    #[test]
     fn default_config_has_hotkey() {
         let cfg = AppConfig::default();
         assert!(!cfg.hotkey.trim().is_empty());
