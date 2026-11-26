@@ -3,6 +3,8 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
+    thread::{self, JoinHandle},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -89,7 +91,7 @@ pub fn print_help() {
     );
 }
 
-pub fn run(options: Options) -> Result<()> {
+pub fn run(options: Options, config: AppConfig) -> Result<()> {
     let paths = Paths::new()?;
     let notifications = !options.no_notify;
     let current_pid = std::process::id();
@@ -99,40 +101,36 @@ pub fn run(options: Options) -> Result<()> {
         current_pid,
     };
 
-    let config = AppConfig::load_or_default();
     ensure_model(&config.model_path)?;
 
-    let recorder = Recorder::new();
-
-    eprintln!("Recording. Run vdora --oneshot again to stop.");
-    notify(
-        &paths,
-        notifications,
-        "Recording. Press shortcut again to stop.",
-    );
-
-    let session = recorder.start()?;
-    write_state(
+    let session = Recorder::new().start()?;
+    if let Err(err) = write_state(
         &paths,
         &State {
             parent_pid: Some(current_pid),
             recorder_pid: Some(session.recorder_pid()),
             phase: Some("recording".to_string()),
         },
-    )?;
+    ) {
+        let _ = session.stop();
+        return Err(err.context("failed to publish recorder state"));
+    }
+
+    eprintln!("Recording. Run vdora --oneshot again to stop.");
+    let notifier = Notifier::new(&paths, notifications);
+    notifier.send("Recording. Press shortcut again to stop.");
 
     // Model loading is hidden behind recording time instead of delaying the stop action.
     let mut service = match WhisperService::load(config.model_path.clone()) {
         Ok(service) => service,
         Err(err) => {
             let _ = session.stop();
-            let _ = cleanup_state(&paths, current_pid);
-            notify(&paths, notifications, "Unable to load Whisper model.");
+            notifier.send("Unable to load Whisper model.");
             return Err(err);
         }
     };
 
-    let audio = session.wait()?;
+    let audio = session.finish()?;
 
     write_state(
         &paths,
@@ -143,13 +141,12 @@ pub fn run(options: Options) -> Result<()> {
         },
     )?;
     eprintln!("Transcribing...");
-    notify(&paths, notifications, "Transcribing...");
+    notifier.send("Transcribing...");
 
     let transcript = service.transcribe_file(audio.path(), config.language.as_deref())?;
 
     if transcript.trim().is_empty() {
-        cleanup_state(&paths, current_pid)?;
-        notify(&paths, notifications, "No speech detected.");
+        notifier.send("No speech detected.");
         return Err(anyhow!("no speech detected"));
     }
 
@@ -158,23 +155,18 @@ pub fn run(options: Options) -> Result<()> {
     if config.autopaste {
         if let Err(err) = paste::trigger(config.paste_mode) {
             tracing::warn!("auto-paste failed after clipboard copy: {err}");
-            notify(
-                &paths,
-                notifications,
-                "Transcript copied. Auto-paste failed.",
-            );
+            notifier.send("Transcript copied. Auto-paste failed.");
         } else {
-            notify(&paths, notifications, "Transcript copied and pasted.");
+            notifier.send("Transcript copied and pasted.");
         }
     } else {
-        notify(&paths, notifications, "Transcript copied to clipboard.");
+        notifier.send("Transcript copied to clipboard.");
     }
 
     eprintln!(
         "Transcript copied to clipboard. Manual paste shortcut: {}.",
         config.paste_mode.shortcut_label()
     );
-    cleanup_state(&paths, current_pid)?;
     Ok(())
 }
 
@@ -208,22 +200,20 @@ fn handle_existing_run_or_exit(paths: &Paths, notifications: bool, current_pid: 
         if process_exists(parent_pid) {
             if state.phase.as_deref() == Some("recording") {
                 if let Some(recorder_pid) = state.recorder_pid {
-                    if process_exists(recorder_pid) {
-                        let _ = kill(Pid::from_raw(recorder_pid as i32), Signal::SIGINT);
+                    if kill(Pid::from_raw(recorder_pid as i32), Signal::SIGINT).is_ok() {
+                        // The recording process owns the transcription notification.
                         eprintln!("Stopped recording. Transcription will start now.");
-                        notify(paths, notifications, "Stopped recording. Transcribing...");
                         std::process::exit(0);
                     }
                 }
             }
 
             let phase = state.phase.unwrap_or_else(|| "running".to_string());
+            lock.unlock()?;
             eprintln!("Vdora is already {phase}. Wait for it to finish.");
-            notify(
-                paths,
-                notifications,
-                &format!("Already {phase}. Wait for it to finish."),
-            );
+            if notifications {
+                notify(paths, &format!("Already {phase}. Wait for it to finish."));
+            }
             std::process::exit(0);
         }
     }
@@ -311,12 +301,50 @@ impl Drop for StateCleanup<'_> {
     }
 }
 
-fn notify(paths: &Paths, enabled: bool, message: &str) {
-    if !enabled || which::which("notify-send").is_err() {
-        return;
+// Serialize notifications so the same run can replace them in order, without
+// waiting for the desktop notification service before capture or inference.
+struct Notifier(Option<(mpsc::Sender<&'static str>, JoinHandle<()>)>);
+
+impl Notifier {
+    fn new(paths: &Paths, enabled: bool) -> Self {
+        if !enabled {
+            return Self(None);
+        }
+        let paths = paths.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("vdora-notify".into())
+            .spawn(move || {
+                for message in receiver {
+                    notify(&paths, message);
+                }
+            });
+        match worker {
+            Ok(worker) => Self(Some((sender, worker))),
+            Err(err) => {
+                tracing::debug!("could not start notification worker: {err}");
+                Self(None)
+            }
+        }
     }
 
-    let _ = fs::create_dir_all(&paths.runtime_dir);
+    fn send(&self, message: &'static str) {
+        if let Some((sender, _)) = &self.0 {
+            let _ = sender.send(message);
+        }
+    }
+}
+
+impl Drop for Notifier {
+    fn drop(&mut self) {
+        if let Some((sender, worker)) = self.0.take() {
+            drop(sender);
+            let _ = worker.join();
+        }
+    }
+}
+
+fn notify(paths: &Paths, message: &str) {
     let previous_id = fs::read_to_string(&paths.notification_id_file)
         .ok()
         .map(|raw| raw.trim().to_string())

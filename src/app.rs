@@ -9,6 +9,8 @@ use std::{
 
 use adw::prelude::*;
 use anyhow::{Context, Result, anyhow};
+use futures_channel::mpsc as async_mpsc;
+use futures_util::StreamExt;
 use gtk::{Orientation, gdk, gio, glib};
 
 use crate::{
@@ -23,11 +25,9 @@ use crate::{
 
 const STALE_RECORDING_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
-enum AppMessage {
-    TranscriptionFinished {
-        id: u64,
-        result: Result<String, String>,
-    },
+struct TranscriptionFinished {
+    id: u64,
+    result: Result<String, String>,
 }
 
 struct TranscriptionRequest {
@@ -60,7 +60,6 @@ pub fn build_ui(app: &adw::Application) {
     let state = Rc::new(RefCell::new(AppState::Idle));
     let recorder = Rc::new(Recorder::new());
     let active_session: Rc<RefCell<Option<RecordingSession>>> = Rc::new(RefCell::new(None));
-    let recording_started_at: Rc<RefCell<Option<Instant>>> = Rc::new(RefCell::new(None));
     let next_transcription_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(1));
     let current_transcription_id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
 
@@ -219,16 +218,10 @@ pub fn build_ui(app: &adw::Application) {
             }
         })
     };
-    refresh_diagnostics();
-
-    let (sender, receiver) = mpsc::channel::<AppMessage>();
+    let (sender, mut receiver) = async_mpsc::unbounded();
     let (transcription_sender, transcription_receiver) = mpsc::channel::<TranscriptionRequest>();
-    spawn_transcription_worker(
-        config.borrow().clone(),
-        transcription_receiver,
-        sender.clone(),
-    );
-    let (tray_sender, tray_receiver) = mpsc::channel::<TrayEvent>();
+    spawn_transcription_worker(config.borrow().clone(), transcription_receiver, sender);
+    let (tray_sender, mut tray_receiver) = async_mpsc::unbounded();
     let tray_controller = match crate::tray::spawn(tray_sender) {
         Ok(controller) => Some(controller),
         Err(err) => {
@@ -245,38 +238,10 @@ pub fn build_ui(app: &adw::Application) {
     };
 
     {
-        let state = state.clone();
-        let overlay = overlay.clone();
-        let transcript_buffer = transcript_buffer.clone();
-        let settings_autopaste_switch = settings_autopaste_switch.clone();
-        let config = config.clone();
         let window = window.clone();
         let app = app.clone();
-        let ui_state_targets = ui_state_targets.clone();
-        let recording_started_at = recording_started_at.clone();
-        let current_transcription_id = current_transcription_id.clone();
-        let elapsed_label = elapsed_label.clone();
-        let error_revealer = error_revealer.clone();
-        let error_label = error_label.clone();
-        let reporter = reporter.clone();
-        let refresh_diagnostics = refresh_diagnostics.clone();
-
-        glib::timeout_add_local(Duration::from_millis(50), move || {
-            if *state.borrow() == AppState::Recording {
-                if let Some(started_at) = *recording_started_at.borrow() {
-                    let elapsed = started_at.elapsed().as_secs();
-                    let minutes = elapsed / 60;
-                    let seconds = elapsed % 60;
-                    let label = format!("Recording: {minutes:02}:{seconds:02}");
-                    if elapsed_label.label().as_str() != label {
-                        elapsed_label.set_label(&label);
-                    }
-                }
-            } else if !elapsed_label.label().is_empty() {
-                elapsed_label.set_label("");
-            }
-
-            while let Ok(event) = tray_receiver.try_recv() {
+        glib::spawn_future_local(async move {
+            while let Some(event) = tray_receiver.next().await {
                 match event {
                     TrayEvent::ShowWindow => {
                         window.present();
@@ -289,89 +254,98 @@ pub fn build_ui(app: &adw::Application) {
                     }
                 }
             }
+        });
+    }
 
-            while let Ok(message) = receiver.try_recv() {
-                match message {
-                    AppMessage::TranscriptionFinished { id, result } => {
-                        let active_transcription_id = *current_transcription_id.borrow();
-                        if should_ignore_transcription_result(active_transcription_id, id) {
-                            tracing::debug!(
-                                "ignoring stale transcription result with id {id}; active id: {:?}",
-                                active_transcription_id
-                            );
+    {
+        let state = state.clone();
+        let overlay = overlay.clone();
+        let transcript_buffer = transcript_buffer.clone();
+        let settings_autopaste_switch = settings_autopaste_switch.clone();
+        let config = config.clone();
+        let window = window.clone();
+        let ui_state_targets = ui_state_targets.clone();
+        let current_transcription_id = current_transcription_id.clone();
+        let error_revealer = error_revealer.clone();
+        let error_label = error_label.clone();
+        let reporter = reporter.clone();
+        let refresh_diagnostics = refresh_diagnostics.clone();
+
+        glib::spawn_future_local(async move {
+            while let Some(TranscriptionFinished { id, result }) = receiver.next().await {
+                let active_transcription_id = *current_transcription_id.borrow();
+                if should_ignore_transcription_result(active_transcription_id, id) {
+                    tracing::debug!(
+                        "ignoring stale transcription result with id {id}; active id: {:?}",
+                        active_transcription_id
+                    );
+                    continue;
+                }
+
+                *current_transcription_id.borrow_mut() = None;
+                *state.borrow_mut() = AppState::Idle;
+                apply_app_state(AppState::Idle, &ui_state_targets);
+
+                match result {
+                    Ok(transcript) => {
+                        error_revealer.set_reveal_child(false);
+                        if transcript.trim().is_empty() {
+                            transcript_buffer.set_text("");
+                            add_toast(&overlay, "No speech detected. Ready when you are.");
+                            refresh_diagnostics();
                             continue;
                         }
 
-                        *current_transcription_id.borrow_mut() = None;
-                        *state.borrow_mut() = AppState::Idle;
-                        *recording_started_at.borrow_mut() = None;
-                        apply_app_state(AppState::Idle, &ui_state_targets);
+                        transcript_buffer.set_text(&transcript);
 
-                        match result {
-                            Ok(transcript) => {
-                                error_revealer.set_reveal_child(false);
-                                if transcript.trim().is_empty() {
-                                    transcript_buffer.set_text("");
-                                    add_toast(&overlay, "No speech detected. Ready when you are.");
-                                    refresh_diagnostics();
-                                    continue;
-                                }
-
-                                transcript_buffer.set_text(&transcript);
-
-                                if let Err(err) = clipboard::set_text(&transcript) {
-                                    add_error_with_diagnostics_refresh(
-                                        &reporter,
-                                        &overlay,
-                                        &refresh_diagnostics,
-                                        "clipboard",
-                                        &format!("Clipboard error: {err}"),
-                                    );
-                                } else if settings_autopaste_switch.is_active() {
-                                    if window.is_active() {
-                                        match paste::trigger(config.borrow().paste_mode) {
-                                            Ok(()) => add_toast(&overlay, "Transcribed and pasted"),
-                                            Err(err) => {
-                                                add_error_with_diagnostics_refresh(
-                                                    &reporter,
-                                                    &overlay,
-                                                    &refresh_diagnostics,
-                                                    "paste",
-                                                    &format!(
-                                                        "Copied only. Auto-paste unavailable: {err}"
-                                                    ),
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        add_toast(
+                        if let Err(err) = clipboard::set_text(&transcript) {
+                            add_error_with_diagnostics_refresh(
+                                &reporter,
+                                &overlay,
+                                &refresh_diagnostics,
+                                "clipboard",
+                                &format!("Clipboard error: {err}"),
+                            );
+                        } else if settings_autopaste_switch.is_active() {
+                            if window.is_active() {
+                                match paste::trigger(config.borrow().paste_mode) {
+                                    Ok(()) => add_toast(&overlay, "Transcribed and pasted"),
+                                    Err(err) => {
+                                        add_error_with_diagnostics_refresh(
+                                            &reporter,
                                             &overlay,
-                                            "Copied only. Focus Vdora to allow auto-paste safely.",
+                                            &refresh_diagnostics,
+                                            "paste",
+                                            &format!("Copied only. Auto-paste unavailable: {err}"),
                                         );
                                     }
-                                } else {
-                                    add_toast(&overlay, "Transcribed and copied")
                                 }
-                            }
-                            Err(err) => {
-                                transcript_buffer.set_text("");
-                                *state.borrow_mut() = AppState::Error;
-                                apply_app_state(AppState::Error, &ui_state_targets);
-                                error_label.set_label(&err);
-                                error_revealer.set_reveal_child(true);
-                                add_error_with_diagnostics_refresh(
-                                    &reporter,
+                            } else {
+                                add_toast(
                                     &overlay,
-                                    &refresh_diagnostics,
-                                    "transcription",
-                                    &err,
+                                    "Copied only. Focus Vdora to allow auto-paste safely.",
                                 );
                             }
+                        } else {
+                            add_toast(&overlay, "Transcribed and copied")
                         }
+                    }
+                    Err(err) => {
+                        transcript_buffer.set_text("");
+                        *state.borrow_mut() = AppState::Error;
+                        apply_app_state(AppState::Error, &ui_state_targets);
+                        error_label.set_label(&err);
+                        error_revealer.set_reveal_child(true);
+                        add_error_with_diagnostics_refresh(
+                            &reporter,
+                            &overlay,
+                            &refresh_diagnostics,
+                            "transcription",
+                            &err,
+                        );
                     }
                 }
             }
-            glib::ControlFlow::Continue
         });
     }
 
@@ -391,7 +365,7 @@ pub fn build_ui(app: &adw::Application) {
         let config = config.clone();
         let recorder = recorder.clone();
         let active_session = active_session.clone();
-        let recording_started_at = recording_started_at.clone();
+        let elapsed_timer: RefCell<Option<glib::SourceId>> = RefCell::new(None);
         let next_transcription_id = next_transcription_id.clone();
         let current_transcription_id = current_transcription_id.clone();
         let state = state.clone();
@@ -413,13 +387,12 @@ pub fn build_ui(app: &adw::Application) {
                 match recorder.start() {
                     Ok(session) => {
                         *active_session.borrow_mut() = Some(session);
-                        *recording_started_at.borrow_mut() = Some(Instant::now());
+                        *elapsed_timer.borrow_mut() = Some(start_elapsed_timer(&elapsed_label));
                         *state.borrow_mut() = AppState::Recording;
                         apply_app_state(AppState::Recording, &ui_state_targets);
                         add_toast(&overlay, "Listening...");
                     }
                     Err(err) => {
-                        *recording_started_at.borrow_mut() = None;
                         *state.borrow_mut() = AppState::Error;
                         apply_app_state(AppState::Error, &ui_state_targets);
                         add_error_with_diagnostics_refresh(
@@ -439,9 +412,12 @@ pub fn build_ui(app: &adw::Application) {
                 return;
             };
 
-            *recording_started_at.borrow_mut() = None;
+            session.request_stop();
+            if let Some(timer) = elapsed_timer.borrow_mut().take() {
+                timer.remove();
+            }
+            elapsed_label.set_label("");
             *state.borrow_mut() = AppState::Transcribing;
-            apply_app_state(AppState::Transcribing, &ui_state_targets);
 
             let transcription_id = {
                 let mut next_id = next_transcription_id.borrow_mut();
@@ -451,7 +427,6 @@ pub fn build_ui(app: &adw::Application) {
             };
             *current_transcription_id.borrow_mut() = Some(transcription_id);
             let config_snapshot = config.borrow().clone();
-            session.request_stop();
             if let Err(err) = transcription_sender.send(TranscriptionRequest {
                 id: transcription_id,
                 session,
@@ -470,6 +445,8 @@ pub fn build_ui(app: &adw::Application) {
                     "transcription",
                     "Transcription worker is unavailable",
                 );
+            } else {
+                apply_app_state(AppState::Transcribing, &ui_state_targets);
             }
         })
     };
@@ -1467,6 +1444,21 @@ fn status_word(available: bool) -> &'static str {
     if available { "available" } else { "missing" }
 }
 
+fn start_elapsed_timer(label: &gtk::Label) -> glib::SourceId {
+    let start = Instant::now();
+    let label = label.clone();
+    label.set_label("Recording: 00:00");
+    glib::timeout_add_local(Duration::from_secs(1), move || {
+        let elapsed = start.elapsed().as_secs();
+        label.set_label(&format!(
+            "Recording: {:02}:{:02}",
+            elapsed / 60,
+            elapsed % 60
+        ));
+        glib::ControlFlow::Continue
+    })
+}
+
 fn apply_app_state(next_state: AppState, targets: &UiStateTargets) {
     targets.status.set_label(next_state.label());
     match next_state {
@@ -1494,7 +1486,7 @@ fn apply_app_state(next_state: AppState, targets: &UiStateTargets) {
 fn spawn_transcription_worker(
     initial_config: AppConfig,
     receiver: mpsc::Receiver<TranscriptionRequest>,
-    sender: mpsc::Sender<AppMessage>,
+    sender: async_mpsc::UnboundedSender<TranscriptionFinished>,
 ) {
     thread::spawn(move || {
         let mut loaded = load_whisper(&initial_config)
@@ -1506,7 +1498,7 @@ fn spawn_transcription_worker(
                 .map_err(|err| format!("Transcription failed: {err:#}"));
 
             if sender
-                .send(AppMessage::TranscriptionFinished {
+                .unbounded_send(TranscriptionFinished {
                     id: request.id,
                     result,
                 })

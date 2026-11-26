@@ -1,7 +1,7 @@
-use std::sync::mpsc::Sender;
 use std::{env, path::PathBuf};
 
 use anyhow::Result;
+use futures_channel::mpsc::UnboundedSender;
 use ksni::menu::StandardItem;
 use ksni::{ToolTip, blocking::TrayMethods};
 
@@ -30,7 +30,7 @@ impl TrayController {
     }
 }
 
-pub fn spawn(sender: Sender<TrayEvent>) -> Result<TrayController> {
+pub fn spawn(sender: UnboundedSender<TrayEvent>) -> Result<TrayController> {
     let base_icon_name = resolve_icon_name();
     let tray = VdoraTray {
         sender,
@@ -43,7 +43,7 @@ pub fn spawn(sender: Sender<TrayEvent>) -> Result<TrayController> {
 }
 
 struct VdoraTray {
-    sender: Sender<TrayEvent>,
+    sender: UnboundedSender<TrayEvent>,
     status: String,
     icon_name: String,
     base_icon_name: String,
@@ -72,7 +72,7 @@ impl ksni::Tray for VdoraTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.sender.send(TrayEvent::ShowWindow);
+        let _ = self.sender.unbounded_send(TrayEvent::ShowWindow);
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -80,7 +80,7 @@ impl ksni::Tray for VdoraTray {
             StandardItem {
                 label: MENU_SHOW_WINDOW.into(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayEvent::ShowWindow);
+                    let _ = tray.sender.unbounded_send(TrayEvent::ShowWindow);
                 }),
                 ..Default::default()
             }
@@ -88,7 +88,7 @@ impl ksni::Tray for VdoraTray {
             StandardItem {
                 label: MENU_HIDE_WINDOW.into(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayEvent::HideWindow);
+                    let _ = tray.sender.unbounded_send(TrayEvent::HideWindow);
                 }),
                 ..Default::default()
             }
@@ -96,7 +96,7 @@ impl ksni::Tray for VdoraTray {
             StandardItem {
                 label: MENU_QUIT.into(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayEvent::Quit);
+                    let _ = tray.sender.unbounded_send(TrayEvent::Quit);
                 }),
                 ..Default::default()
             }
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     #[ignore = "run under dbus-run-session with no StatusNotifierWatcher"]
     fn spawn_reports_missing_tray_support() {
-        let (sender, _receiver) = std::sync::mpsc::channel();
+        let (sender, _receiver) = futures_channel::mpsc::unbounded();
         assert!(super::spawn(sender).is_err());
     }
 

@@ -55,7 +55,7 @@ Vdora needs a Whisper model. By default it expects:
 ~/.local/share/vdora/models/ggml-base.en.bin
 ```
 
-In one-shot mode, Vdora downloads a missing `ggml-base.en.bin` automatically on first use. For GUI mode, install a model first. You can also place your own model there:
+In one-shot mode, Vdora downloads a missing `ggml-base.en.bin` automatically on first use. For GUI mode, install a model first. English-only models always transcribe in English. To dictate in another language, use a multilingual model and either select a language or leave it blank for automatic detection. You can also place your own model there:
 
 ```bash
 mkdir -p ~/.local/share/vdora/models
