@@ -7,6 +7,9 @@ on:
   pull_request:
 
 jobs:
+  windows:
+    uses: ./.github/workflows/build-windows.yml
+
   build-and-test:
     runs-on: ubuntu-latest
 

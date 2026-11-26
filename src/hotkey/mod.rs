@@ -3,10 +3,6 @@ const MOD_ALT: &str = "<Alt>";
 const MOD_SHIFT: &str = "<Shift>";
 const MOD_SUPER: &str = "<Super>";
 
-pub fn default_hotkey() -> &'static str {
-    "<Ctrl><Alt>space"
-}
-
 pub fn global_hotkeys_supported() -> bool {
     matches!(
         std::env::var("XDG_SESSION_TYPE").ok().as_deref(),

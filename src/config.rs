@@ -1,12 +1,17 @@
-use std::{fs, io::Write, path::PathBuf};
+#[cfg(target_os = "linux")]
+use std::io::Write;
+use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::stt::model::DEFAULT_MODEL_FILE;
+
 const APP_QUALIFIER: &str = "com";
 const APP_ORG: &str = "vdora";
 const APP_NAME: &str = "vdora";
+pub const DEFAULT_HOTKEY: &str = "<Ctrl><Alt>space";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -27,6 +32,7 @@ pub enum PasteMode {
     Terminal,
 }
 
+#[cfg(target_os = "linux")]
 impl PasteMode {
     pub fn shortcut_label(self) -> &'static str {
         match self {
@@ -51,6 +57,7 @@ impl LogLevel {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn as_ui_label(self) -> &'static str {
         match self {
             Self::Info => "info",
@@ -73,7 +80,7 @@ impl Default for AppConfig {
             paste_mode: PasteMode::default(),
             language: None,
             model_path,
-            hotkey: crate::hotkey::default_hotkey().to_string(),
+            hotkey: DEFAULT_HOTKEY.into(),
             log_level: LogLevel::default(),
         }
     }
@@ -103,6 +110,7 @@ impl AppConfig {
         Ok(parsed)
     }
 
+    #[cfg(target_os = "linux")]
     pub fn save(&self) -> Result<()> {
         let path = config_file_path()?;
         if let Some(parent) = path.parent() {
@@ -132,9 +140,10 @@ fn default_model_path() -> PathBuf {
     if let Some(project_dirs) = ProjectDirs::from(APP_QUALIFIER, APP_ORG, APP_NAME) {
         project_dirs
             .data_local_dir()
-            .join("models/ggml-base.en.bin")
+            .join("models")
+            .join(DEFAULT_MODEL_FILE)
     } else {
-        PathBuf::from("./models/ggml-base.en.bin")
+        PathBuf::from("./models").join(DEFAULT_MODEL_FILE)
     }
 }
 

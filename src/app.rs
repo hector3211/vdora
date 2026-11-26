@@ -19,7 +19,7 @@ use crate::{
     diagnostics, hotkey,
     insert::{clipboard, paste},
     state::AppState,
-    stt::whisper::{WhisperService, validate_model_path},
+    stt::{model::validate_model_path, whisper::WhisperService},
     tray::TrayEvent,
 };
 
@@ -60,6 +60,12 @@ pub fn build_ui(app: &adw::Application) {
     let state = Rc::new(RefCell::new(AppState::Idle));
     let recorder = Rc::new(Recorder::new());
     let active_session: Rc<RefCell<Option<RecordingSession>>> = Rc::new(RefCell::new(None));
+    let session_on_shutdown = Rc::downgrade(&active_session);
+    app.connect_shutdown(move |_| {
+        if let Some(session) = session_on_shutdown.upgrade() {
+            drop(session.borrow_mut().take());
+        }
+    });
     let next_transcription_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(1));
     let current_transcription_id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
 
@@ -475,7 +481,7 @@ pub fn build_ui(app: &adw::Application) {
             "settings",
             &format!("Invalid hotkey in config: {err}. Reset to default."),
         );
-        let default = hotkey::default_hotkey().to_string();
+        let default = crate::config::DEFAULT_HOTKEY.to_string();
         if let Err(reset_err) = apply_hotkey_accel(app, &default) {
             add_error_toast(
                 &reporter,
@@ -1550,6 +1556,12 @@ mod tests {
     use crate::state::AppState;
     use tempfile::NamedTempFile;
 
+    fn model_path_fixture() -> NamedTempFile {
+        let model = NamedTempFile::new().unwrap();
+        std::fs::write(model.path(), b"nonempty model placeholder").unwrap();
+        model
+    }
+
     #[test]
     fn toggle_recording_blocked_while_transcribing() {
         assert!(!can_toggle_recording(AppState::Transcribing));
@@ -1575,7 +1587,7 @@ mod tests {
 
     #[test]
     fn build_next_config_updates_values_without_mutating_original() {
-        let model = NamedTempFile::new().expect("temp model file should be created");
+        let model = model_path_fixture();
         let model_path = model.path().display().to_string();
         let current = AppConfig::default();
 
@@ -1591,7 +1603,7 @@ mod tests {
 
     #[test]
     fn build_next_config_rejects_unavailable_autopaste() {
-        let model = NamedTempFile::new().expect("temp model file should be created");
+        let model = model_path_fixture();
         let model_path = model.path().display().to_string();
         let current = AppConfig::default();
 
@@ -1615,7 +1627,7 @@ mod tests {
 
     #[test]
     fn build_next_config_keeps_existing_log_level() {
-        let model = NamedTempFile::new().expect("temp model file should be created");
+        let model = model_path_fixture();
         let model_path = model.path().display().to_string();
         let mut current = AppConfig::default();
         current.log_level = LogLevel::Debug;
