@@ -94,15 +94,6 @@ impl RecordingSession {
         } = self;
         finish_recording(child, output_path, temp_path)
     }
-
-    pub fn wait(self) -> Result<RecordedAudio> {
-        let RecordingSession {
-            child,
-            output_path,
-            temp_path,
-        } = self;
-        finish_recording(child, output_path, temp_path)
-    }
 }
 
 fn finish_recording(

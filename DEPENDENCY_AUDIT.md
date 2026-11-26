@@ -1,5 +1,15 @@
 # Dependency audit
 
+## Follow-up: 2026-11-25
+
+The starting lockfile had six RustSec vulnerabilities and five advisory warnings. Refreshed dependencies within the Rust 1.92 compatibility constraint, including `ureq` 3.5.2, `rustls` 0.23.46, `rustls-webpki` 0.103.17, `webpki-roots` 1.0.12, `rustix` 1.1.6, and `tokio` 1.54.1. This resolves RUSTSEC-2026-0346 through -0349, -0381, and -0382, plus the unsoundness warnings -0386 and -0486. Also updated `ksni` to 0.3.7 and `nix` to 0.32.0; Whisper and the GTK/libadwaita bindings were already current.
+
+The three remaining advisories are informational: `zvariant`, `zbus_names`, and `zvariant_derive` moved into `zbus` 6 (RUSTSEC-2026-0370, -0371, -0372). The latest published `ksni` still requires `zbus` 5, so there is no compatible drop-in update. CI temporarily ignores only those three IDs and still denies all vulnerabilities and other warnings. Remove the exceptions when `ksni` migrates to `zbus` 6.
+
+`cargo audit` now reports zero vulnerabilities; the CI audit command passes with the three documented exceptions. `cargo machete` reports no unused direct dependencies. `cargo update --dry-run --verbose` finds no further compatible updates; `cfg-expr` pins `target-lexicon` to 0.13.5. This scan covers Cargo dependencies, not bundled native Whisper code, OS packages, or GitHub Actions.
+
+## Original audit: 2026-10-11
+
 Audited on 2026-10-11 against the working-tree lockfile (including its existing uncommitted updates), using crates.io metadata and the freshly fetched RustSec advisory database.
 
 ## Findings and remediation

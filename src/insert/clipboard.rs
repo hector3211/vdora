@@ -31,58 +31,66 @@ fn set_with_wl_copy(text: &str) -> Result<()> {
         return Err(anyhow!("not running on Wayland"));
     }
 
-    let wl_copy = which::which("wl-copy").context("wl-copy is not installed")?;
-    let mut child = Command::new(wl_copy)
-        .arg("--type")
-        .arg("text/plain;charset=utf-8")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn wl-copy")?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("failed to open stdin for wl-copy"))?;
-    stdin
-        .write_all(text.as_bytes())
-        .context("failed to write clipboard text to wl-copy")?;
-    drop(stdin);
-
-    if let Some(status) = child.try_wait().context("failed to check wl-copy status")? {
-        if !status.success() {
-            return Err(anyhow!("wl-copy exited with status {status}"));
-        }
-    }
-
-    Ok(())
+    // Without --foreground the launcher exits after setting the selection.
+    // A running launcher isn't a successful copy; auto-paste must wait for it.
+    run_clipboard_helper(
+        Command::new("wl-copy").args(["--type", "text/plain;charset=utf-8"]),
+        "wl-copy",
+        text,
+    )
 }
 
 fn set_with_xsel(text: &str) -> Result<()> {
-    let xsel = which::which("xsel").context("xsel is not installed")?;
-    let mut child = Command::new(xsel)
-        .arg("--clipboard")
-        .arg("--input")
+    run_clipboard_helper(
+        Command::new("xsel").args(["--clipboard", "--input"]),
+        "xsel",
+        text,
+    )
+}
+
+fn run_clipboard_helper(command: &mut Command, name: &str, text: &str) -> Result<()> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("failed to spawn xsel")?;
+        .with_context(|| format!("failed to spawn {name}"))?;
 
-    let mut stdin = child
+    let write_result = child
         .stdin
         .take()
-        .ok_or_else(|| anyhow!("failed to open stdin for xsel"))?;
-    stdin
-        .write_all(text.as_bytes())
-        .context("failed to write clipboard text to xsel")?;
-    drop(stdin);
+        .with_context(|| format!("failed to open stdin for {name}"))
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(text.as_bytes())
+                .with_context(|| format!("failed to write clipboard text to {name}"))
+        });
+    // Reap the launcher even when writing fails.
+    let status = child
+        .wait()
+        .with_context(|| format!("failed to wait for {name}"))?;
+    if !status.success() {
+        return Err(anyhow!("{name} exited with status {status}"));
+    }
+    write_result
+}
 
-    let status = child.wait().context("failed to wait for xsel")?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!("xsel exited with status {status}"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waits_for_clipboard_helper_and_reports_delayed_failure() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat > /dev/null; sleep 0.05; exit 7"]);
+        let error = run_clipboard_helper(&mut command, "test helper", "transcript").unwrap_err();
+        assert!(error.to_string().contains("exit status: 7"));
+    }
+
+    #[test]
+    fn sends_the_whole_transcript_before_waiting() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "test \"$(wc -c)\" -eq 131072"]);
+        run_clipboard_helper(&mut command, "test helper", &"a".repeat(131_072)).unwrap();
     }
 }

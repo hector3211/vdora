@@ -8,6 +8,7 @@ const MIN_AUDIO_SAMPLES: usize = 4_000;
 
 pub struct WhisperService {
     state: whisper_rs::WhisperState,
+    multilingual: bool,
 }
 
 impl WhisperService {
@@ -15,6 +16,7 @@ impl WhisperService {
         validate_model_path(&model_path)?;
         let started_at = Instant::now();
         let context = build_context(&model_path)?;
+        let multilingual = context.is_multilingual();
         let state = context
             .create_state()
             .context("failed to create whisper state")?;
@@ -23,7 +25,10 @@ impl WhisperService {
             model_path.display(),
             started_at.elapsed()
         );
-        Ok(Self { state })
+        Ok(Self {
+            state,
+            multilingual,
+        })
     }
 
     pub fn transcribe_file(&mut self, wav_path: &Path, language: Option<&str>) -> Result<String> {
@@ -32,7 +37,11 @@ impl WhisperService {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         configure_full_params(&mut params);
         params.set_no_context(true);
-        params.set_language(language);
+        // Keep Whisper's default `en` for English-only models. Auto-detection
+        // costs an extra encoder pass whose result their decoder cannot use.
+        if self.multilingual {
+            params.set_language(language);
+        }
 
         self.state
             .full(params, &audio)

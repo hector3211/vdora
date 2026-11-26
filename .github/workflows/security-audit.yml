@@ -26,4 +26,10 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Run cargo audit
-        run: cargo audit --deny warnings
+        # ksni still depends on zbus 5; remove these informational exceptions
+        # once ksni switches to zbus 6. All vulnerabilities still fail the audit.
+        run: >-
+          cargo audit --deny warnings
+          --ignore RUSTSEC-2026-0370
+          --ignore RUSTSEC-2026-0371
+          --ignore RUSTSEC-2026-0372
