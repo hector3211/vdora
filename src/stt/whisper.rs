@@ -1,10 +1,10 @@
-use std::{fs, path::Path, path::PathBuf, time::Instant};
+use std::{path::Path, path::PathBuf, time::Instant};
 
 use anyhow::{Context, Result, anyhow};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-const REQUIRED_SAMPLE_RATE: u32 = 16_000;
-const MIN_AUDIO_SAMPLES: usize = 4_000;
+use super::model::validate_model_path;
+use crate::audio::{MIN_SAMPLES, SAMPLE_RATE};
 
 pub struct WhisperService {
     state: whisper_rs::WhisperState,
@@ -31,45 +31,41 @@ impl WhisperService {
         })
     }
 
+    #[cfg(target_os = "linux")]
     pub fn transcribe_file(&mut self, wav_path: &Path, language: Option<&str>) -> Result<String> {
-        let started_at = Instant::now();
         let audio = load_wav_file(wav_path)?;
+        self.transcribe_samples(&audio, language)
+    }
+
+    pub fn transcribe_samples(&mut self, audio: &[f32], language: Option<&str>) -> Result<String> {
+        let started_at = Instant::now();
+        validate_length(audio.len())?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         configure_full_params(&mut params);
         params.set_no_context(true);
         // Keep Whisper's default `en` for English-only models. Auto-detection
         // costs an extra encoder pass whose result their decoder cannot use.
         if self.multilingual {
+            if language.is_some_and(|language| language.contains('\0')) {
+                return Err(anyhow!("language cannot contain a null byte"));
+            }
             params.set_language(language);
         }
 
         self.state
-            .full(params, &audio)
+            .full(params, audio)
             .context("whisper failed to transcribe audio")?;
 
         let transcript = collect_segments(&self.state)?;
 
         let cleaned = normalize_transcript(&transcript);
         tracing::debug!(
-            "transcribed {} in {:.2?}",
-            wav_path.display(),
+            "transcribed {} samples in {:.2?}",
+            audio.len(),
             started_at.elapsed()
         );
         Ok(cleaned)
     }
-}
-
-pub fn validate_model_path(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Err(anyhow!("missing model file at {}", path.display()));
-    }
-
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("failed to read model metadata at {}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(anyhow!("model path must point to a regular file"));
-    }
-    Ok(())
 }
 
 fn build_context(model_path: &Path) -> Result<WhisperContext> {
@@ -336,15 +332,26 @@ mod tests {
     }
 }
 
+fn validate_length(len: usize) -> Result<()> {
+    if len < MIN_SAMPLES {
+        return Err(anyhow!(
+            "recording too short: need at least {}ms of audio",
+            MIN_SAMPLES * 1000 / SAMPLE_RATE as usize
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn load_wav_file(path: &Path) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path)
         .with_context(|| format!("failed to open wav file at {}", path.display()))?;
     let spec = reader.spec();
 
-    if spec.sample_rate != REQUIRED_SAMPLE_RATE {
+    if spec.sample_rate != SAMPLE_RATE {
         return Err(anyhow!(
             "invalid wav sample rate: expected {}Hz, got {}Hz",
-            REQUIRED_SAMPLE_RATE,
+            SAMPLE_RATE,
             spec.sample_rate
         ));
     }
@@ -381,12 +388,7 @@ fn load_wav_file(path: &Path) -> Result<Vec<f32>> {
     }
 
     if spec.channels == 1 {
-        if samples.len() < MIN_AUDIO_SAMPLES {
-            return Err(anyhow!(
-                "recording too short: need at least {}ms of audio",
-                MIN_AUDIO_SAMPLES * 1000 / REQUIRED_SAMPLE_RATE as usize
-            ));
-        }
+        validate_length(samples.len())?;
         return Ok(samples);
     }
 
@@ -401,12 +403,7 @@ fn load_wav_file(path: &Path) -> Result<Vec<f32>> {
         .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
         .collect();
 
-    if mono.len() < MIN_AUDIO_SAMPLES {
-        return Err(anyhow!(
-            "recording too short: need at least {}ms of audio",
-            MIN_AUDIO_SAMPLES * 1000 / REQUIRED_SAMPLE_RATE as usize
-        ));
-    }
+    validate_length(mono.len())?;
 
     Ok(mono)
 }

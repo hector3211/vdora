@@ -22,7 +22,7 @@ pub fn trigger(mode: PasteMode) -> Result<()> {
         env::var_os("XDG_RUNTIME_DIR"),
         Path::new("/tmp/.ydotool_socket"),
     );
-    trigger_with_binary(&binary, mode, socket.as_deref())
+    trigger_with_command(Command::new(binary), mode, socket.as_deref())
 }
 
 fn select_socket(
@@ -44,8 +44,11 @@ fn is_socket(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
-fn trigger_with_binary(binary: &Path, mode: PasteMode, socket: Option<&Path>) -> Result<()> {
-    let mut command = Command::new(binary);
+fn trigger_with_command(
+    mut command: Command,
+    mode: PasteMode,
+    socket: Option<&Path>,
+) -> Result<()> {
     command.arg("key").args(key_events(mode));
     if let Some(socket) = socket {
         command.env("YDOTOOL_SOCKET", socket);
@@ -83,12 +86,9 @@ fn key_events(mode: PasteMode) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use std::{os::unix::fs::PermissionsExt, path::Path, sync::Mutex};
+    use std::{path::Path, process::Command};
 
-    // Avoid fork/exec races with another test's open script writer (ETXTBSY).
-    static SCRIPT_COMMAND_LOCK: Mutex<()> = Mutex::new(());
-
-    use super::{key_events, select_socket, trigger_with_binary};
+    use super::{key_events, select_socket, trigger_with_command};
     use crate::config::PasteMode;
 
     #[test]
@@ -107,44 +107,36 @@ mod tests {
         );
     }
 
-    fn fake_ydotool(dir: &Path, script: &str) -> std::path::PathBuf {
-        let path = dir.join("ydotool");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        path
+    fn fake_ydotool(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script, "fake-ydotool"]);
+        command
     }
 
     #[test]
     fn command_dispatches_the_selected_mode_without_injecting_real_keys() {
-        let _guard = SCRIPT_COMMAND_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
         for (mode, expected) in [
             (PasteMode::Standard, "key 29:1 47:1 47:0 29:0"),
             (PasteMode::Terminal, "key 29:1 42:1 47:1 47:0 42:0 29:0"),
         ] {
-            let binary = fake_ydotool(dir.path(), &format!("test \"$*\" = '{expected}'"));
-            trigger_with_binary(&binary, mode, None).unwrap();
+            let command = fake_ydotool(&format!("test \"$*\" = '{expected}'"));
+            trigger_with_command(command, mode, None).unwrap();
         }
     }
 
     #[test]
     fn selected_socket_is_forwarded_to_the_client() {
-        let _guard = SCRIPT_COMMAND_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("ydotool.sock");
-        let binary = fake_ydotool(
-            dir.path(),
-            &format!("test \"$YDOTOOL_SOCKET\" = '{}'", socket.display()),
-        );
-        trigger_with_binary(&binary, PasteMode::Terminal, Some(&socket)).unwrap();
+        let mut command = fake_ydotool("test \"$YDOTOOL_SOCKET\" = \"$EXPECTED_SOCKET\"");
+        command.env("EXPECTED_SOCKET", &socket);
+        trigger_with_command(command, PasteMode::Terminal, Some(&socket)).unwrap();
     }
 
     #[test]
     fn command_failure_reports_stdout_diagnostics() {
-        let _guard = SCRIPT_COMMAND_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let binary = fake_ydotool(dir.path(), "echo 'failed to connect socket'; exit 2");
-        let error = trigger_with_binary(&binary, PasteMode::Terminal, None)
+        let command = fake_ydotool("echo 'failed to connect socket'; exit 2");
+        let error = trigger_with_command(command, PasteMode::Terminal, None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("failed to connect socket"), "{error}");
@@ -213,10 +205,8 @@ mod tests {
 
     #[test]
     fn command_failure_includes_shortcut_and_daemon_error() {
-        let _guard = SCRIPT_COMMAND_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let binary = fake_ydotool(dir.path(), "echo 'socket permission denied' >&2; exit 1");
-        let error = trigger_with_binary(&binary, PasteMode::Terminal, None)
+        let command = fake_ydotool("echo 'socket permission denied' >&2; exit 1");
+        let error = trigger_with_command(command, PasteMode::Terminal, None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("Ctrl+Shift+V"));

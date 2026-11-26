@@ -1,7 +1,7 @@
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    path::{Path, PathBuf},
+    fs::{self, OpenOptions},
+    io::{ErrorKind, Write},
+    path::PathBuf,
     process::Command,
     sync::mpsc,
     thread::{self, JoinHandle},
@@ -17,13 +17,10 @@ use crate::{
     audio::recorder::Recorder,
     config::AppConfig,
     insert::{clipboard, paste},
-    stt::whisper::WhisperService,
+    stt::{model::ensure_model, whisper::WhisperService},
 };
 
 const APP_TITLE: &str = "Vdora";
-const DEFAULT_MODEL_FILE: &str = "ggml-base.en.bin";
-const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -218,7 +215,6 @@ fn handle_existing_run_or_exit(paths: &Paths, notifications: bool, current_pid: 
         }
     }
 
-    let _ = fs::remove_file(&paths.state_file);
     write_state(
         paths,
         &State {
@@ -232,17 +228,19 @@ fn handle_existing_run_or_exit(paths: &Paths, notifications: bool, current_pid: 
 }
 
 fn process_exists(pid: u32) -> bool {
-    kill(Pid::from_raw(pid as i32), None).is_ok()
+    matches!(
+        kill(Pid::from_raw(pid as i32), None),
+        Ok(()) | Err(nix::errno::Errno::EPERM)
+    )
 }
 
 fn read_state(paths: &Paths) -> Result<State> {
     let mut state = State::default();
-    let Ok(mut file) = File::open(&paths.state_file) else {
-        return Ok(state);
+    let contents = match fs::read_to_string(&paths.state_file) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(state),
+        Err(err) => return Err(err).context("failed to read one-shot state"),
     };
-
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
     for line in contents.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -258,10 +256,9 @@ fn read_state(paths: &Paths) -> Result<State> {
 }
 
 fn parse_pid(value: &str) -> Option<u32> {
-    match value.parse::<u32>().ok()? {
-        0 => None,
-        pid => Some(pid),
-    }
+    let pid = value.parse::<i32>().ok()?;
+    // Non-positive POSIX PIDs select groups, not a single process.
+    (pid > 0).then_some(pid as u32)
 }
 
 fn write_state(paths: &Paths, state: &State) -> Result<()> {
@@ -280,10 +277,14 @@ fn write_state(paths: &Paths, state: &State) -> Result<()> {
 
 fn cleanup_state(paths: &Paths, current_pid: u32) -> Result<()> {
     let state = read_state(paths)?;
-    if state.parent_pid == Some(current_pid) {
-        let _ = fs::remove_file(&paths.state_file);
+    if state.parent_pid != Some(current_pid) {
+        return Ok(());
     }
-    Ok(())
+    match fs::remove_file(&paths.state_file) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).context("failed to remove one-shot state"),
+    }
 }
 
 // Clear the active-run marker on every exit path, including recording,
@@ -373,53 +374,25 @@ fn notify(paths: &Paths, message: &str) {
     }
 }
 
-fn ensure_model(model_path: &Path) -> Result<()> {
-    if model_path.exists() {
-        return crate::stt::whisper::validate_model_path(model_path);
-    }
-
-    let Some(file_name) = model_path.file_name().and_then(|name| name.to_str()) else {
-        return Err(anyhow!("invalid model path: {}", model_path.display()));
-    };
-
-    if file_name != DEFAULT_MODEL_FILE {
-        return Err(anyhow!(
-            "missing model file at {}. Only the default model is auto-downloaded.",
-            model_path.display()
-        ));
-    }
-
-    if let Some(parent) = model_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    eprintln!(
-        "Downloading default Whisper model to {}",
-        model_path.display()
-    );
-    let response = ureq::get(DEFAULT_MODEL_URL)
-        .call()
-        .context("failed to download default Whisper model")?;
-    let mut reader = response.into_body().into_reader();
-    // Unique, same-directory temporary files prevent concurrent downloads from
-    // sharing a partial model; failed downloads are removed automatically.
-    let parent = model_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut out = tempfile::NamedTempFile::new_in(parent)?;
-    let bytes = std::io::copy(&mut reader, &mut out)?;
-    if bytes == 0 {
-        return Err(anyhow!("downloaded model is empty"));
-    }
-    out.as_file().sync_all()?;
-    out.persist(model_path).map_err(|err| err.error)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Paths, State, StateCleanup, ensure_model, read_state, write_state};
+    use super::{Paths, State, StateCleanup, parse_pid, read_state, write_state};
+
+    #[test]
+    fn state_pids_must_be_positive_and_fit_pid_t() {
+        assert_eq!(parse_pid("123"), Some(123));
+        for invalid in ["0", "-1", "2147483648", "4294967295", "not a pid"] {
+            assert_eq!(parse_pid(invalid), None, "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn inaccessible_state_path_is_not_treated_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir.path().join("not-a-directory"));
+        std::fs::write(&paths.runtime_dir, "not a directory").unwrap();
+        assert!(read_state(&paths).is_err());
+    }
 
     fn paths(dir: &std::path::Path) -> Paths {
         Paths {
@@ -486,16 +459,5 @@ mod tests {
             current_pid: 123,
         });
         assert_eq!(read_state(&paths).unwrap().parent_pid, Some(456));
-    }
-
-    #[test]
-    fn existing_model_directory_is_rejected_without_download() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            ensure_model(dir.path())
-                .unwrap_err()
-                .to_string()
-                .contains("regular file")
-        );
     }
 }

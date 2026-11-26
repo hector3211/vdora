@@ -2,13 +2,13 @@
 
 > Speak. Transcribe locally. Paste anywhere.
 
-Vdora is a native Linux voice-to-text app for GNOME and other GTK-based desktops. It records your voice, transcribes it **locally** with OpenAI Whisper, and copies the result to your clipboard — ready to paste into any application.
+Vdora records your voice, transcribes it **locally** with OpenAI Whisper, and copies the result to your clipboard. It has a desktop app for Linux and a portable, keyboard-driven build for Windows x64.
 
 No cloud. No subscription. Your voice never leaves your machine.
 
 ## What is Vdora for?
 
-Vdora is built for anyone who wants to talk instead of type on Linux. It works especially well as a global dictation shortcut you can trigger from anywhere.
+Vdora is built for anyone who wants to talk instead of type. It works especially well as a global dictation shortcut you can trigger from anywhere.
 
 Common uses:
 
@@ -28,7 +28,11 @@ Common uses:
 
 ## Installation
 
-### From GitHub Releases (recommended)
+### Windows (x64)
+
+Extract `vdora-windows-x86_64.zip` and run `vdora.exe`. Keep the terminal open and press `Ctrl+Alt+Space` to start and stop; paste with `Ctrl+V`. See [Windows setup and build instructions](WINDOWS.md) for the ZIP, prerequisites, and troubleshooting. The sections below cover Linux.
+
+### Linux from GitHub Releases (recommended)
 
 Download the latest release from [github.com/hector3211/vdora/releases](https://github.com/hector3211/vdora/releases):
 

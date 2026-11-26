@@ -1,0 +1,54 @@
+name: Build Windows x64
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      CXXFLAGS: /EHsc
+      # Do not inherit the CI host's CPU instruction set in the portable build.
+      GGML_NATIVE: "OFF"
+      GGML_AVX: "OFF"
+      GGML_AVX2: "OFF"
+      GGML_BMI2: "OFF"
+      GGML_SSE42: "ON"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x64
+
+      - name: Test Windows build
+        run: cargo test --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Build and smoke-test executable
+        run: |
+          cargo build --locked --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $help = & .\target\x86_64-pc-windows-msvc\release\vdora.exe --help
+          if ($LASTEXITCODE -ne 0 -or "$help" -notmatch 'Ctrl\+Alt\+Space') {
+            throw 'Windows CLI smoke test failed'
+          }
+
+      - name: Package portable ZIP
+        run: |
+          New-Item -Path dist\stage -ItemType Directory -Force | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\vdora.exe dist\stage\
+          Copy-Item WINDOWS.md dist\stage\README.md
+          Copy-Item LICENSE dist\stage\
+          Compress-Archive -Path dist\stage\* -DestinationPath dist\vdora-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vdora-windows-x86_64
+          path: dist/vdora-windows-x86_64.zip
+          if-no-files-found: error

@@ -1,4 +1,4 @@
-name: Release Linux Artifacts
+name: Release Artifacts
 
 on:
   workflow_dispatch:
@@ -7,10 +7,13 @@ on:
       - "v*"
 
 jobs:
+  build-windows:
+    uses: ./.github/workflows/build-windows.yml
+
   build-linux:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -43,10 +46,22 @@ jobs:
           name: vdora-linux-artifacts
           path: dist/*
 
-      - name: Attach artifacts to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
+          pattern: vdora-*
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
           files: |
             dist/vdora-linux-x86_64.tar.gz
             dist/vdora-linux-amd64.deb
+            dist/vdora-windows-x86_64.zip
